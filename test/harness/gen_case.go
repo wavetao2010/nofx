@@ -412,13 +412,13 @@ func main() {
 
 	fmt.Printf("generated %s\n", outPath)
 
-	// Generate harness-style test wrapper under test/<Func>/<case>/<Func>_test.go
-	testDir := filepath.Join("test", fd.Name.Name, caseName)
-	if err := os.MkdirAll(testDir, 0o755); err != nil {
-		fmt.Fprintf(os.Stderr, "create test dir failed: %v\n", err)
+	// Generate harness-style test wrapper under parent test/<Func>/ (not per-case)
+	parentTestDir := filepath.Join("test", fd.Name.Name)
+	if err := os.MkdirAll(parentTestDir, 0o755); err != nil {
+		fmt.Fprintf(os.Stderr, "create parent test dir failed: %v\n", err)
 		os.Exit(4)
 	}
-	testFilePath := filepath.Join(testDir, fd.Name.Name+"_test.go")
+	testFilePath := filepath.Join(parentTestDir, fd.Name.Name+"_test.go")
 	f2, err := os.Create(testFilePath)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "create test file failed: %v\n", err)
@@ -426,17 +426,14 @@ func main() {
 	}
 	defer f2.Close()
 
-	// write harness-style test
-	pkgName := fd.Name.Name // use function name as package (folder already named so this is okay)
-	// ensure valid package name: use lowercase
-	pkgName = strings.ToLower(pkgName)
+	// write harness-style test in parent dir
+	pkgName := strings.ToLower(fd.Name.Name)
 	fmt.Fprintf(f2, "// @Target(%s)\n", fd.Name.Name)
 	fmt.Fprintf(f2, "package %s\n\n", pkgName)
 	fmt.Fprintln(f2, "import (")
 	fmt.Fprintln(f2, "\t\"testing\"")
 	fmt.Fprintln(f2, "\t\"nofx/test/harness\"")
 	fmt.Fprintln(f2, ")\n")
-	// struct and hooks
 	fmt.Fprintf(f2, "// %sTest 嵌入 BaseTest，可按需重写 Before/After 钩子\n", strings.Title(fd.Name.Name))
 	fmt.Fprintf(f2, "type %sTest struct {\n\tharness.BaseTest\n}\n\n", strings.Title(fd.Name.Name))
 	fmt.Fprintf(f2, "func (rt *%sTest) Before(t *testing.T) {\n\trt.BaseTest.Before(t)\n\tif rt.Env != nil {\n\t\tt.Logf(\"TestEnv API URL: %%s\", rt.Env.URL())\n\t} else {\n\t\tt.Log(\"Warning: Env is nil in Before\")\n\t}\n}\n\n", strings.Title(fd.Name.Name))
