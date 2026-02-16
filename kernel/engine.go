@@ -1089,6 +1089,11 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 		sb.WriteString("3. Write chain of thought first, then output structured JSON\n\n")
 	}
 
+	// 6.5 Symbol restrictions
+	sb.WriteString("# ⚠️ Symbol Restrictions\n\n")
+	sb.WriteString("- You may **only** trade symbols from the candidate coins list and currently held positions\n")
+	sb.WriteString("- **Never** trade symbols not present in the provided data — doing so will cause execution failure\n\n")
+
 	// 7. Output format
 	sb.WriteString("# Output Format (Strictly Follow)\n\n")
 	sb.WriteString("**Must use XML tags <reasoning> and <decision> to separate chain of thought and decision JSON, avoiding parsing errors**\n\n")
@@ -1111,6 +1116,8 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 	sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
 	sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening recommended ≥ %d)\n", riskControl.MinConfidence))
 	sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
+	sb.WriteString("- `stop_loss`: **Required** for new positions. Formula: base SL distance = 3% × leverage (capped at 30%). Long: entry × (1 - distance), Short: entry × (1 + distance). Adjust based on support/resistance\n")
+	sb.WriteString("- `take_profit`: **Required** for new positions. Formula: base TP distance = 9% × leverage (capped at 50%). Long: entry × (1 + distance), Short: entry × (1 - distance). Adjust based on resistance/support\n")
 	sb.WriteString("- **IMPORTANT**: All numeric values must be calculated numbers, NOT formulas/expressions (e.g., use `27.76` not `3000 * 0.01`)\n\n")
 
 	// 8. Custom Prompt
