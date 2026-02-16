@@ -3,6 +3,7 @@ package trader
 import (
 	"encoding/json"
 	"fmt"
+	"math"
 	"nofx/experience"
 	"nofx/kernel"
 	"nofx/logger"
@@ -1244,6 +1245,20 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
+	// Fallback SL/TP calculation if AI didn't provide values
+	// Formula: distance = base% × leverage, capped at max%
+	// SL: 3% base, 30% cap; TP: 9% base, 50% cap
+	if decision.StopLoss <= 0 {
+		slDistance := math.Min(0.03*float64(decision.Leverage), 0.30)
+		decision.StopLoss = marketData.CurrentPrice * (1 - slDistance)
+		logger.Infof("  ⚠ AI did not provide stop_loss, using fallback: %.4f (%.1f%% below entry)", decision.StopLoss, slDistance*100)
+	}
+	if decision.TakeProfit <= 0 {
+		tpDistance := math.Min(0.09*float64(decision.Leverage), 0.50)
+		decision.TakeProfit = marketData.CurrentPrice * (1 + tpDistance)
+		logger.Infof("  ⚠ AI did not provide take_profit, using fallback: %.4f (%.1f%% above entry)", decision.TakeProfit, tpDistance*100)
+	}
+
 	// Set stop loss and take profit
 	if err := at.trader.SetStopLoss(decision.Symbol, "LONG", quantity, decision.StopLoss); err != nil {
 		logger.Infof("  ⚠ Failed to set stop loss: %v", err)
@@ -1363,6 +1378,19 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	// Record position opening time
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
+
+	// Fallback SL/TP calculation if AI didn't provide values
+	// For short: SL above entry, TP below entry
+	if decision.StopLoss <= 0 {
+		slDistance := math.Min(0.03*float64(decision.Leverage), 0.30)
+		decision.StopLoss = marketData.CurrentPrice * (1 + slDistance)
+		logger.Infof("  ⚠ AI did not provide stop_loss, using fallback: %.4f (%.1f%% above entry)", decision.StopLoss, slDistance*100)
+	}
+	if decision.TakeProfit <= 0 {
+		tpDistance := math.Min(0.09*float64(decision.Leverage), 0.50)
+		decision.TakeProfit = marketData.CurrentPrice * (1 - tpDistance)
+		logger.Infof("  ⚠ AI did not provide take_profit, using fallback: %.4f (%.1f%% below entry)", decision.TakeProfit, tpDistance*100)
+	}
 
 	// Set stop loss and take profit
 	if err := at.trader.SetStopLoss(decision.Symbol, "SHORT", quantity, decision.StopLoss); err != nil {

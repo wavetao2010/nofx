@@ -641,7 +641,14 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 
 	basePrice, ok := priceMap[symbol]
 	if !ok || basePrice <= 0 {
-		return actionRecord, nil, "", fmt.Errorf("price unavailable for %s (found=%v, price=%.4f)", symbol, ok, basePrice)
+		// For non-trading actions (wait/hold), silently skip symbols not in backtest pool
+		// These symbols likely came from OI/NetFlow/Price ranking data
+		action := strings.ToLower(dec.Action)
+		if action == "wait" || action == "hold" {
+			actionRecord.Success = true
+			return actionRecord, nil, "", nil
+		}
+		return actionRecord, nil, "", fmt.Errorf("price unavailable for %s (symbol not in backtest pool, likely from ranking data)", symbol)
 	}
 	fillPrice := r.executionPrice(symbol, basePrice, ts)
 
