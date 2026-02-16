@@ -19,6 +19,8 @@ type position struct {
 	LiquidationPrice float64
 	OpenTime         int64
 	AccumulatedFee   float64 // Total fees paid (opening + any additions)
+	StopLoss         float64 // Stop-loss trigger price (0 = no SL)
+	TakeProfit       float64 // Take-profit trigger price (0 = no TP)
 }
 
 type BacktestAccount struct {
@@ -260,6 +262,8 @@ func (acc *BacktestAccount) RestoreFromSnapshots(cash float64, realized float64,
 			LiquidationPrice: snap.LiquidationPrice,
 			OpenTime:         snap.OpenTime,
 			AccumulatedFee:   snap.AccumulatedFee,
+			StopLoss:         snap.StopLoss,
+			TakeProfit:       snap.TakeProfit,
 		}
 		key := positionKey(pos.Symbol, pos.Side)
 		acc.positions[key] = pos

@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"nofx/logger"
 	"os"
 	"path/filepath"
@@ -294,6 +295,14 @@ func (r *Runner) stepOnce() error {
 		execLog         []string
 		hadError        bool
 	)
+
+	// Check SL/TP triggers BEFORE AI decision (simulates exchange algo orders)
+	slTpEvents, slTpNote := r.checkStopLossTakeProfit(ts, priceMap, callCount)
+	if len(slTpEvents) > 0 {
+		tradeEvents = append(tradeEvents, slTpEvents...)
+		execLog = append(execLog, fmt.Sprintf("🛡️ SL/TP triggered: %s", slTpNote))
+		logger.Infof("🛡️ SL/TP triggered: %s", slTpNote)
+	}
 
 	decisionAttempted := shouldDecide
 
@@ -662,6 +671,8 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 		if err != nil {
 			return actionRecord, nil, "", err
 		}
+		// Set SL/TP on position (with leverage-based fallback)
+		r.applyStopLossTakeProfit(pos, dec.StopLoss, dec.TakeProfit, execPrice)
 		actionRecord.Quantity = qty
 		actionRecord.Price = execPrice
 		actionRecord.Leverage = pos.Leverage
@@ -691,6 +702,8 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 		if err != nil {
 			return actionRecord, nil, "", err
 		}
+		// Set SL/TP on position (with leverage-based fallback)
+		r.applyStopLossTakeProfit(pos, dec.StopLoss, dec.TakeProfit, execPrice)
 		actionRecord.Quantity = qty
 		actionRecord.Price = execPrice
 		actionRecord.Leverage = pos.Leverage
@@ -984,6 +997,8 @@ func (r *Runner) updateState(ts int64, equity, unrealized, marginUsed float64, p
 			MarginUsed:       pos.Margin,
 			OpenTime:         pos.OpenTime,
 			AccumulatedFee:   pos.AccumulatedFee,
+			StopLoss:         pos.StopLoss,
+			TakeProfit:       pos.TakeProfit,
 		}
 	}
 
@@ -1105,6 +1120,111 @@ func (r *Runner) checkLiquidation(ts int64, priceMap map[string]float64, cycle i
 	r.stateMu.Unlock()
 
 	return events, note, nil
+}
+
+// applyStopLossTakeProfit sets SL/TP on a position. If AI didn't provide values,
+// uses leverage-based fallback: SL = 3% × leverage (cap 30%), TP = 9% × leverage (cap 50%).
+func (r *Runner) applyStopLossTakeProfit(pos *position, aiSL, aiTP, execPrice float64) {
+	if pos.Side == "long" {
+		if aiSL > 0 {
+			pos.StopLoss = aiSL
+		} else {
+			slDist := math.Min(0.03*float64(pos.Leverage), 0.30)
+			pos.StopLoss = execPrice * (1 - slDist)
+		}
+		if aiTP > 0 {
+			pos.TakeProfit = aiTP
+		} else {
+			tpDist := math.Min(0.09*float64(pos.Leverage), 0.50)
+			pos.TakeProfit = execPrice * (1 + tpDist)
+		}
+	} else { // short
+		if aiSL > 0 {
+			pos.StopLoss = aiSL
+		} else {
+			slDist := math.Min(0.03*float64(pos.Leverage), 0.30)
+			pos.StopLoss = execPrice * (1 + slDist)
+		}
+		if aiTP > 0 {
+			pos.TakeProfit = aiTP
+		} else {
+			tpDist := math.Min(0.09*float64(pos.Leverage), 0.50)
+			pos.TakeProfit = execPrice * (1 - tpDist)
+		}
+	}
+}
+
+// checkStopLossTakeProfit checks all positions for SL/TP triggers and auto-closes them.
+// Called every bar BEFORE AI decision, similar to how exchange algo orders work.
+func (r *Runner) checkStopLossTakeProfit(ts int64, priceMap map[string]float64, cycle int) ([]TradeEvent, string) {
+	positions := append([]*position(nil), r.account.Positions()...)
+	events := make([]TradeEvent, 0)
+	var noteBuilder strings.Builder
+
+	for _, pos := range positions {
+		price, ok := priceMap[pos.Symbol]
+		if !ok || price <= 0 {
+			continue
+		}
+
+		var triggered bool
+		var reason string
+		triggerPrice := price
+
+		if pos.Side == "long" {
+			if pos.StopLoss > 0 && price <= pos.StopLoss {
+				triggered = true
+				reason = "stop_loss"
+				triggerPrice = pos.StopLoss
+			} else if pos.TakeProfit > 0 && price >= pos.TakeProfit {
+				triggered = true
+				reason = "take_profit"
+				triggerPrice = pos.TakeProfit
+			}
+		} else { // short
+			if pos.StopLoss > 0 && price >= pos.StopLoss {
+				triggered = true
+				reason = "stop_loss"
+				triggerPrice = pos.StopLoss
+			} else if pos.TakeProfit > 0 && price <= pos.TakeProfit {
+				triggered = true
+				reason = "take_profit"
+				triggerPrice = pos.TakeProfit
+			}
+		}
+
+		if !triggered {
+			continue
+		}
+
+		realized, fee, finalPrice, err := r.account.Close(pos.Symbol, pos.Side, pos.Quantity, triggerPrice)
+		if err != nil {
+			logger.Infof("⚠ SL/TP close failed for %s %s: %v", pos.Symbol, pos.Side, err)
+			continue
+		}
+
+		noteBuilder.WriteString(fmt.Sprintf("%s %s %s @ %.4f; ", pos.Symbol, pos.Side, reason, finalPrice))
+
+		evt := TradeEvent{
+			Timestamp:     ts,
+			Symbol:        pos.Symbol,
+			Action:        reason,
+			Side:          pos.Side,
+			Quantity:      pos.Quantity,
+			Price:         finalPrice,
+			Fee:           fee,
+			OrderValue:    finalPrice * pos.Quantity,
+			RealizedPnL:   realized - fee,
+			Leverage:      pos.Leverage,
+			Cycle:         cycle,
+			PositionAfter: 0,
+			Note:          fmt.Sprintf("%s triggered at %.4f", reason, finalPrice),
+		}
+		events = append(events, evt)
+	}
+
+	note := strings.TrimSuffix(noteBuilder.String(), "; ")
+	return events, note
 }
 
 func (r *Runner) shouldTriggerDecision(barIndex int) bool {

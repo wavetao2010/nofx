@@ -26,6 +26,8 @@ type PositionSnapshot struct {
 	MarginUsed       float64 `json:"margin_used"`
 	OpenTime         int64   `json:"open_time"`
 	AccumulatedFee   float64 `json:"accumulated_fee,omitempty"` // Opening fees accumulated
+	StopLoss         float64 `json:"stop_loss,omitempty"`       // Stop-loss trigger price
+	TakeProfit       float64 `json:"take_profit,omitempty"`     // Take-profit trigger price
 }
 
 // BacktestState represents the real-time state during execution (in-memory state).
