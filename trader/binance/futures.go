@@ -58,7 +58,13 @@ type FuturesTrader struct {
 	positionsCacheTime  time.Time
 	positionsCacheMutex sync.RWMutex
 
-	// Cache validity period (15 seconds)
+	// Unified account snapshot cache (ensures balance + positions from same moment)
+	cachedSnapshot      *types.AccountSnapshot
+	snapshotCacheTime   time.Time
+	snapshotCacheMutex  sync.RWMutex
+	snapshotCacheTTL    time.Duration // Default 30 seconds
+
+	// Cache validity period (15 seconds) - for legacy GetBalance/GetPositions
 	cacheDuration time.Duration
 }
 
@@ -74,8 +80,9 @@ func NewFuturesTrader(apiKey, secretKey string, userId string) *FuturesTrader {
 	// Sync time to avoid "Timestamp ahead" error
 	syncBinanceServerTime(client)
 	trader := &FuturesTrader{
-		client:        client,
-		cacheDuration: 15 * time.Second, // 15-second cache
+		client:           client,
+		cacheDuration:    15 * time.Second, // 15-second cache for legacy methods
+		snapshotCacheTTL: 30 * time.Second, // 30-second cache for unified snapshot
 	}
 
 	// Set dual-side position mode (Hedge Mode)
@@ -215,6 +222,129 @@ func (t *FuturesTrader) GetPositions() ([]map[string]interface{}, error) {
 	t.positionsCacheMutex.Unlock()
 
 	return result, nil
+}
+
+// GetAccountSnapshot gets atomic account snapshot (balance + positions at same moment)
+// This ensures data consistency by fetching both in quick succession and caching together
+func (t *FuturesTrader) GetAccountSnapshot() (*types.AccountSnapshot, error) {
+	// Check cache first (read lock)
+	t.snapshotCacheMutex.RLock()
+	if t.cachedSnapshot != nil && time.Since(t.snapshotCacheTime) < t.snapshotCacheTTL {
+		snapshot := t.cachedSnapshot
+		t.snapshotCacheMutex.RUnlock()
+		// Return a copy with CacheHit set to true
+		result := *snapshot
+		result.CacheHit = true
+		logger.Infof("✓ Using cached account snapshot (age: %.1fs)", time.Since(t.snapshotCacheTime).Seconds())
+		return &result, nil
+	}
+	t.snapshotCacheMutex.RUnlock()
+
+	// Acquire write lock
+	t.snapshotCacheMutex.Lock()
+	defer t.snapshotCacheMutex.Unlock()
+
+	// Double-check after acquiring write lock (another goroutine may have updated)
+	if t.cachedSnapshot != nil && time.Since(t.snapshotCacheTime) < t.snapshotCacheTTL {
+		result := *t.cachedSnapshot
+		result.CacheHit = true
+		return &result, nil
+	}
+
+	startTime := time.Now()
+	logger.Infof("🔄 Fetching atomic account snapshot from Binance...")
+
+	// Step 1: Get account info (balance)
+	account, err := t.client.NewGetAccountService().Do(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get account for snapshot: %w", err)
+	}
+
+	// Step 2: Get positions (immediately after balance for consistency)
+	positions, err := t.client.NewGetPositionRiskService().Do(context.Background())
+	if err != nil {
+		return nil, fmt.Errorf("failed to get positions for snapshot: %w", err)
+	}
+
+	// Build snapshot
+	snapshot := &types.AccountSnapshot{
+		Timestamp:     time.Now(),
+		CacheHit:      false,
+		FetchDuration: time.Since(startTime),
+	}
+
+	// Parse balance fields
+	snapshot.WalletBalance, _ = strconv.ParseFloat(account.TotalWalletBalance, 64)
+	snapshot.AvailableBalance, _ = strconv.ParseFloat(account.AvailableBalance, 64)
+	snapshot.UnrealizedPnL, _ = strconv.ParseFloat(account.TotalUnrealizedProfit, 64)
+	snapshot.TotalEquity = snapshot.WalletBalance + snapshot.UnrealizedPnL
+
+	// Parse positions
+	for _, pos := range positions {
+		posAmt, _ := strconv.ParseFloat(pos.PositionAmt, 64)
+		if posAmt == 0 {
+			continue // Skip zero positions
+		}
+
+		// Determine side
+		side := "LONG"
+		quantity := posAmt
+		if posAmt < 0 {
+			side = "SHORT"
+			quantity = -posAmt // Make positive
+		}
+
+		leverage, _ := strconv.ParseFloat(pos.Leverage, 64)
+		entryPrice, _ := strconv.ParseFloat(pos.EntryPrice, 64)
+		markPrice, _ := strconv.ParseFloat(pos.MarkPrice, 64)
+		unrealizedPnL, _ := strconv.ParseFloat(pos.UnRealizedProfit, 64)
+		liquidationPrice, _ := strconv.ParseFloat(pos.LiquidationPrice, 64)
+
+		snapshot.Positions = append(snapshot.Positions, types.PositionSnapshot{
+			Symbol:           pos.Symbol,
+			Side:             side,
+			Quantity:         quantity,
+			EntryPrice:       entryPrice,
+			MarkPrice:        markPrice,
+			UnrealizedPnL:    unrealizedPnL,
+			Leverage:         int(leverage),
+			LiquidationPrice: liquidationPrice,
+		})
+	}
+
+	logger.Infof("✓ Account snapshot fetched: equity=%.2f, wallet=%.2f, unrealizedPnL=%.2f, positions=%d (took %dms)",
+		snapshot.TotalEquity, snapshot.WalletBalance, snapshot.UnrealizedPnL,
+		len(snapshot.Positions), snapshot.FetchDuration.Milliseconds())
+
+	// Update cache
+	t.cachedSnapshot = snapshot
+	t.snapshotCacheTime = time.Now()
+
+	return snapshot, nil
+}
+
+// InvalidateCache invalidates all cached data (balance, positions, snapshot)
+// Should be called after trade execution to ensure fresh data on next request
+func (t *FuturesTrader) InvalidateCache() {
+	// Invalidate balance cache
+	t.balanceCacheMutex.Lock()
+	t.cachedBalance = nil
+	t.balanceCacheTime = time.Time{}
+	t.balanceCacheMutex.Unlock()
+
+	// Invalidate positions cache
+	t.positionsCacheMutex.Lock()
+	t.cachedPositions = nil
+	t.positionsCacheTime = time.Time{}
+	t.positionsCacheMutex.Unlock()
+
+	// Invalidate snapshot cache
+	t.snapshotCacheMutex.Lock()
+	t.cachedSnapshot = nil
+	t.snapshotCacheTime = time.Time{}
+	t.snapshotCacheMutex.Unlock()
+
+	logger.Infof("🔄 All Binance caches invalidated")
 }
 
 // SetMarginMode sets margin mode

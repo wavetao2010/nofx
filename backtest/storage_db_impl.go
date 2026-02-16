@@ -58,18 +58,18 @@ func saveConfigDB(runID string, cfg *BacktestConfig) error {
 		userID = "default"
 	}
 	_, err = persistenceDB.Exec(convertQuery(`
-		INSERT INTO backtest_runs (run_id, user_id, config_json, prompt_template, custom_prompt, override_prompt, ai_provider, ai_model, created_at, updated_at)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+		INSERT INTO backtest_runs (run_id, user_id, config_json, prompt_template, custom_prompt, override_prompt, ai_provider, ai_model, strategy_id, strategy_name, created_at, updated_at)
+		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 		ON CONFLICT(run_id) DO NOTHING
-	`), runID, userID, data, template, cfg.CustomPrompt, cfg.OverrideBasePrompt, cfg.AICfg.Provider, cfg.AICfg.Model, now, now)
+	`), runID, userID, data, template, cfg.CustomPrompt, cfg.OverrideBasePrompt, cfg.AICfg.Provider, cfg.AICfg.Model, cfg.StrategyID, cfg.StrategyName, now, now)
 	if err != nil {
 		return err
 	}
 	_, err = persistenceDB.Exec(convertQuery(`
 		UPDATE backtest_runs
-		SET user_id = ?, config_json = ?, prompt_template = ?, custom_prompt = ?, override_prompt = ?, ai_provider = ?, ai_model = ?, updated_at = CURRENT_TIMESTAMP
+		SET user_id = ?, config_json = ?, prompt_template = ?, custom_prompt = ?, override_prompt = ?, ai_provider = ?, ai_model = ?, strategy_id = ?, strategy_name = ?, updated_at = CURRENT_TIMESTAMP
 		WHERE run_id = ?
-	`), userID, data, template, cfg.CustomPrompt, cfg.OverrideBasePrompt, cfg.AICfg.Provider, cfg.AICfg.Model, runID)
+	`), userID, data, template, cfg.CustomPrompt, cfg.OverrideBasePrompt, cfg.AICfg.Provider, cfg.AICfg.Model, cfg.StrategyID, cfg.StrategyName, runID)
 	return err
 }
 

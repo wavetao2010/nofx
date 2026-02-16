@@ -3,7 +3,6 @@ package trader
 import (
 	"encoding/json"
 	"fmt"
-	"math"
 	"nofx/experience"
 	"nofx/kernel"
 	"nofx/logger"
@@ -744,72 +743,47 @@ func (at *AutoTrader) runCycle() error {
 }
 
 // buildTradingContext builds trading context
+// Uses unified account snapshot to ensure data consistency between balance and positions
 func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
-	// 1. Get account information
-	balance, err := at.trader.GetBalance()
+	// 1. Get atomic account snapshot (balance + positions at same moment)
+	snapshot, err := at.trader.GetAccountSnapshot()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get account balance: %w", err)
+		return nil, fmt.Errorf("failed to get account snapshot: %w", err)
 	}
 
-	// Get account fields
-	totalWalletBalance := 0.0
-	totalUnrealizedProfit := 0.0
-	availableBalance := 0.0
-	totalEquity := 0.0
+	// Extract values from snapshot
+	totalUnrealizedProfit := snapshot.UnrealizedPnL
+	availableBalance := snapshot.AvailableBalance
+	totalEquity := snapshot.TotalEquity
 
-	if wallet, ok := balance["totalWalletBalance"].(float64); ok {
-		totalWalletBalance = wallet
-	}
-	if unrealized, ok := balance["totalUnrealizedProfit"].(float64); ok {
-		totalUnrealizedProfit = unrealized
-	}
-	if avail, ok := balance["availableBalance"].(float64); ok {
-		availableBalance = avail
-	}
-
-	// Use totalEquity directly if provided by trader (more accurate)
-	if eq, ok := balance["totalEquity"].(float64); ok && eq > 0 {
-		totalEquity = eq
-	} else {
-		// Fallback: Total Equity = Wallet balance + Unrealized profit
-		totalEquity = totalWalletBalance + totalUnrealizedProfit
-	}
-
-	// 2. Get position information
-	positions, err := at.trader.GetPositions()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get positions: %w", err)
-	}
-
+	// 2. Build position info list from snapshot
 	var positionInfos []kernel.PositionInfo
 	totalMarginUsed := 0.0
 
 	// Current position key set (for cleaning up closed position records)
 	currentPositionKeys := make(map[string]bool)
 
-	for _, pos := range positions {
-		symbol := pos["symbol"].(string)
-		side := pos["side"].(string)
-		entryPrice := pos["entryPrice"].(float64)
-		markPrice := pos["markPrice"].(float64)
-		quantity := pos["positionAmt"].(float64)
-		if quantity < 0 {
-			quantity = -quantity // Short position quantity is negative, convert to positive
-		}
+	for _, pos := range snapshot.Positions {
+		symbol := pos.Symbol
+		side := strings.ToLower(pos.Side) // Normalize to lowercase
+		entryPrice := pos.EntryPrice
+		markPrice := pos.MarkPrice
+		quantity := pos.Quantity // Already positive from snapshot
+		unrealizedPnl := pos.UnrealizedPnL
+		liquidationPrice := pos.LiquidationPrice
+		leverage := pos.Leverage
 
 		// Skip closed positions (quantity = 0), prevent "ghost positions" from being passed to AI
 		if quantity == 0 {
 			continue
 		}
 
-		unrealizedPnl := pos["unRealizedProfit"].(float64)
-		liquidationPrice := pos["liquidationPrice"].(float64)
+		// Default leverage if not set
+		if leverage <= 0 {
+			leverage = 10
+		}
 
 		// Calculate margin used (estimated)
-		leverage := 10 // Default value, should actually be fetched from position info
-		if lev, ok := pos["leverage"].(float64); ok {
-			leverage = int(lev)
-		}
 		marginUsed := (quantity * markPrice) / float64(leverage)
 		totalMarginUsed += marginUsed
 
@@ -829,13 +803,7 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 				}
 			}
 		}
-		// Priority 2: Get from exchange API (Bybit: createdTime, OKX: createdTime)
-		if updateTime == 0 {
-			if createdTime, ok := pos["createdTime"].(int64); ok && createdTime > 0 {
-				updateTime = createdTime
-			}
-		}
-		// Priority 3: Fallback to local tracking
+		// Priority 2: Fallback to local tracking (snapshot doesn't have createdTime)
 		if updateTime == 0 {
 			if _, exists := at.positionFirstSeenTime[posKey]; !exists {
 				at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
@@ -925,16 +893,14 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 		CandidateCoins: candidateCoins,
 	}
 
-	// 7. Add recent closed trades (if store is available)
+	// 7. Add trading experience context (if store is available)
 	if at.store != nil {
-		// Get recent 10 closed trades for AI context
-		recentTrades, err := at.store.Position().GetRecentTrades(at.id, 10)
+		// 7a. Recent closed trades (reduced to 5 for conciseness)
+		recentTrades, err := at.store.Position().GetRecentTrades(at.id, 5)
 		if err != nil {
-			logger.Infof("⚠️ [%s] Failed to get recent trades: %v", at.name, err)
+			logger.Infof("[%s] Failed to get recent trades: %v", at.name, err)
 		} else {
-			logger.Infof("📊 [%s] Found %d recent closed trades for AI context", at.name, len(recentTrades))
 			for _, trade := range recentTrades {
-				// Convert Unix timestamps to formatted strings for AI readability
 				entryTimeStr := ""
 				if trade.EntryTime > 0 {
 					entryTimeStr = time.Unix(trade.EntryTime, 0).UTC().Format("01-02 15:04 UTC")
@@ -943,7 +909,6 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 				if trade.ExitTime > 0 {
 					exitTimeStr = time.Unix(trade.ExitTime, 0).UTC().Format("01-02 15:04 UTC")
 				}
-
 				ctx.RecentOrders = append(ctx.RecentOrders, kernel.RecentOrder{
 					Symbol:       trade.Symbol,
 					Side:         trade.Side,
@@ -957,30 +922,63 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 				})
 			}
 		}
-		// Get trading statistics for AI context
-		stats, err := at.store.Position().GetFullStats(at.id)
+
+		// 7b. Comprehensive history summary (includes stats, symbol/direction insights, streaks)
+		historySummary, err := at.store.Position().GetHistorySummary(at.id)
 		if err != nil {
-			logger.Infof("⚠️ [%s] Failed to get trading stats: %v", at.name, err)
-		} else if stats == nil {
-			logger.Infof("⚠️ [%s] GetFullStats returned nil", at.name)
-		} else if stats.TotalTrades == 0 {
-			logger.Infof("⚠️ [%s] GetFullStats returned 0 trades (traderID=%s)", at.name, at.id)
-		} else {
-			ctx.TradingStats = &kernel.TradingStats{
-				TotalTrades:    stats.TotalTrades,
-				WinRate:        stats.WinRate,
-				ProfitFactor:   stats.ProfitFactor,
-				SharpeRatio:    stats.SharpeRatio,
-				TotalPnL:       stats.TotalPnL,
-				AvgWin:         stats.AvgWin,
-				AvgLoss:        stats.AvgLoss,
-				MaxDrawdownPct: stats.MaxDrawdownPct,
+			logger.Infof("[%s] Failed to get history summary: %v", at.name, err)
+		} else if historySummary != nil && historySummary.TotalTrades > 0 {
+			fullStats, statsErr := at.store.Position().GetFullStats(at.id)
+			if statsErr != nil {
+				logger.Infof("[%s] Failed to get full stats: %v", at.name, statsErr)
 			}
-			logger.Infof("📈 [%s] Trading stats: %d trades, %.1f%% win rate, PF=%.2f, Sharpe=%.2f, DD=%.1f%%",
-				at.name, stats.TotalTrades, stats.WinRate, stats.ProfitFactor, stats.SharpeRatio, stats.MaxDrawdownPct)
+			ctx.HistorySummary = convertHistorySummary(historySummary, fullStats)
+			// Also populate TradingStats for backward compatibility
+			if statsErr == nil && fullStats != nil {
+				ctx.TradingStats = &kernel.TradingStats{
+					TotalTrades:    fullStats.TotalTrades,
+					WinRate:        fullStats.WinRate,
+					ProfitFactor:   fullStats.ProfitFactor,
+					SharpeRatio:    fullStats.SharpeRatio,
+					TotalPnL:       fullStats.TotalPnL,
+					AvgWin:         fullStats.AvgWin,
+					AvgLoss:        fullStats.AvgLoss,
+					MaxDrawdownPct: fullStats.MaxDrawdownPct,
+				}
+			}
+			logger.Infof("[%s] History: %d trades, %.1f%% win, streak=%d, best=%v, worst=%v",
+				at.name, historySummary.TotalTrades, historySummary.WinRate,
+				historySummary.CurrentStreak,
+				symbolNames(ctx.HistorySummary.BestSymbols),
+				symbolNames(ctx.HistorySummary.WorstSymbols))
+		}
+
+		// 7c. Recent decision summaries (last 5 AI decisions)
+		decisionSummaries, err := at.store.Decision().GetRecentDecisionSummaries(at.id, 5)
+		if err != nil {
+			logger.Infof("[%s] Failed to get recent decisions: %v", at.name, err)
+		} else if len(decisionSummaries) > 0 {
+			ctx.RecentDecisions = make([]kernel.DecisionSummaryData, 0, len(decisionSummaries))
+			for _, ds := range decisionSummaries {
+				kd := kernel.DecisionSummaryData{
+					Timestamp: ds.Timestamp.UTC().Format("01-02 15:04"),
+					Success:   ds.Success,
+				}
+				for _, a := range ds.Actions {
+					kd.Actions = append(kd.Actions, kernel.ActionSummary{
+						Action:     a.Action,
+						Symbol:     a.Symbol,
+						Confidence: a.Confidence,
+						Reasoning:  a.Reasoning,
+						Succeeded:  a.Success,
+					})
+				}
+				ctx.RecentDecisions = append(ctx.RecentDecisions, kd)
+			}
+			logger.Infof("[%s] Loaded %d recent decision summaries for AI context", at.name, len(ctx.RecentDecisions))
 		}
 	} else {
-		logger.Infof("⚠️ [%s] Store is nil, cannot get recent trades", at.name)
+		logger.Infof("[%s] Store is nil, cannot get trading experience", at.name)
 	}
 
 	// 8. Get quantitative data (if enabled in strategy config)
@@ -1035,6 +1033,60 @@ func (at *AutoTrader) buildTradingContext() (*kernel.Context, error) {
 	}
 
 	return ctx, nil
+}
+
+// convertHistorySummary converts store.HistorySummary to kernel.HistorySummaryData
+func convertHistorySummary(h *store.HistorySummary, stats *store.TraderStats) *kernel.HistorySummaryData {
+	data := &kernel.HistorySummaryData{
+		TotalTrades:    h.TotalTrades,
+		WinRate:        h.WinRate,
+		TotalPnL:       h.TotalPnL,
+		AvgTradeReturn: h.AvgTradeReturn,
+		LongWinRate:    h.LongWinRate,
+		ShortWinRate:   h.ShortWinRate,
+		LongPnL:        h.LongPnL,
+		ShortPnL:       h.ShortPnL,
+		BestHoldRange:  h.BestHoldRange,
+		AvgHoldingMins: h.AvgHoldingMins,
+		CurrentStreak:  h.CurrentStreak,
+		MaxWinStreak:   h.MaxWinStreak,
+		MaxLoseStreak:  h.MaxLoseStreak,
+		RecentWinRate:  h.RecentWinRate,
+		RecentPnL:      h.RecentPnL,
+	}
+	if stats != nil {
+		data.ProfitFactor = stats.ProfitFactor
+		data.SharpeRatio = stats.SharpeRatio
+		data.AvgWin = stats.AvgWin
+		data.AvgLoss = stats.AvgLoss
+		data.MaxDrawdownPct = stats.MaxDrawdownPct
+	}
+	for _, s := range h.BestSymbols {
+		data.BestSymbols = append(data.BestSymbols, kernel.SymbolInsight{
+			Symbol:   s.Symbol,
+			Trades:   s.TotalTrades,
+			WinRate:  s.WinRate,
+			TotalPnL: s.TotalPnL,
+		})
+	}
+	for _, s := range h.WorstSymbols {
+		data.WorstSymbols = append(data.WorstSymbols, kernel.SymbolInsight{
+			Symbol:   s.Symbol,
+			Trades:   s.TotalTrades,
+			WinRate:  s.WinRate,
+			TotalPnL: s.TotalPnL,
+		})
+	}
+	return data
+}
+
+// symbolNames extracts symbol names from SymbolInsight slice for logging
+func symbolNames(insights []kernel.SymbolInsight) []string {
+	names := make([]string, len(insights))
+	for i, s := range insights {
+		names[i] = s.Symbol
+	}
+	return names
 }
 
 // executeDecisionWithRecord executes AI decision and records detailed information
@@ -1175,6 +1227,9 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		return err
 	}
 
+	// Invalidate cache after successful trade to ensure fresh data
+	at.trader.InvalidateCache()
+
 	// Record order ID
 	if orderID, ok := order["orderId"].(int64); ok {
 		actionRecord.OrderID = orderID
@@ -1292,6 +1347,9 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		return err
 	}
 
+	// Invalidate cache after successful trade to ensure fresh data
+	at.trader.InvalidateCache()
+
 	// Record order ID
 	if orderID, ok := order["orderId"].(int64); ok {
 		actionRecord.OrderID = orderID
@@ -1369,6 +1427,9 @@ func (at *AutoTrader) executeCloseLongWithRecord(decision *kernel.Decision, acti
 		return err
 	}
 
+	// Invalidate cache after successful trade to ensure fresh data
+	at.trader.InvalidateCache()
+
 	// Record order ID
 	if orderID, ok := order["orderId"].(int64); ok {
 		actionRecord.OrderID = orderID
@@ -1432,6 +1493,9 @@ func (at *AutoTrader) executeCloseShortWithRecord(decision *kernel.Decision, act
 	if err != nil {
 		return err
 	}
+
+	// Invalidate cache after successful trade to ensure fresh data
+	at.trader.InvalidateCache()
 
 	// Record order ID
 	if orderID, ok := order["orderId"].(int64); ok {
@@ -1590,69 +1654,32 @@ func (at *AutoTrader) GetStatus() map[string]interface{} {
 }
 
 // GetAccountInfo gets account information (for API)
+// Uses unified account snapshot to ensure data consistency
 func (at *AutoTrader) GetAccountInfo() (map[string]interface{}, error) {
-	balance, err := at.trader.GetBalance()
+	// Use atomic snapshot for consistent balance + positions data
+	snapshot, err := at.trader.GetAccountSnapshot()
 	if err != nil {
-		return nil, fmt.Errorf("failed to get balance: %w", err)
+		return nil, fmt.Errorf("failed to get account snapshot: %w", err)
 	}
 
-	// Get account fields
-	totalWalletBalance := 0.0
-	totalUnrealizedProfit := 0.0
-	availableBalance := 0.0
-	totalEquity := 0.0
+	// Extract values from snapshot (already consistent)
+	totalEquity := snapshot.TotalEquity
+	totalWalletBalance := snapshot.WalletBalance
+	totalUnrealizedProfit := snapshot.UnrealizedPnL
+	availableBalance := snapshot.AvailableBalance
 
-	if wallet, ok := balance["totalWalletBalance"].(float64); ok {
-		totalWalletBalance = wallet
-	}
-	if unrealized, ok := balance["totalUnrealizedProfit"].(float64); ok {
-		totalUnrealizedProfit = unrealized
-	}
-	if avail, ok := balance["availableBalance"].(float64); ok {
-		availableBalance = avail
-	}
-
-	// Use totalEquity directly if provided by trader (more accurate)
-	if eq, ok := balance["totalEquity"].(float64); ok && eq > 0 {
-		totalEquity = eq
-	} else {
-		// Fallback: Total Equity = Wallet balance + Unrealized profit
-		totalEquity = totalWalletBalance + totalUnrealizedProfit
-	}
-
-	// Get positions to calculate total margin
-	positions, err := at.trader.GetPositions()
-	if err != nil {
-		return nil, fmt.Errorf("failed to get positions: %w", err)
-	}
-
+	// Calculate margin used from snapshot positions
 	totalMarginUsed := 0.0
-	totalUnrealizedPnLCalculated := 0.0
-	for _, pos := range positions {
-		markPrice := pos["markPrice"].(float64)
-		quantity := pos["positionAmt"].(float64)
-		if quantity < 0 {
-			quantity = -quantity
+	for _, pos := range snapshot.Positions {
+		leverage := pos.Leverage
+		if leverage <= 0 {
+			leverage = 10 // Default leverage
 		}
-		unrealizedPnl := pos["unRealizedProfit"].(float64)
-		totalUnrealizedPnLCalculated += unrealizedPnl
-
-		leverage := 10
-		if lev, ok := pos["leverage"].(float64); ok {
-			leverage = int(lev)
-		}
-		marginUsed := (quantity * markPrice) / float64(leverage)
+		marginUsed := (pos.Quantity * pos.MarkPrice) / float64(leverage)
 		totalMarginUsed += marginUsed
 	}
 
-	// Verify unrealized P&L consistency (API value vs calculated from positions)
-	// Note: Lighter API may return 0 for unrealized PnL, this is a known limitation
-	diff := math.Abs(totalUnrealizedProfit - totalUnrealizedPnLCalculated)
-	if diff > 5.0 { // Only warn if difference is significant (> 5 USDT)
-		logger.Infof("⚠️ Unrealized P&L inconsistency (Lighter API limitation): API=%.4f, Calculated=%.4f, Diff=%.4f",
-			totalUnrealizedProfit, totalUnrealizedPnLCalculated, diff)
-	}
-
+	// Calculate total P&L
 	totalPnL := totalEquity - at.initialBalance
 	totalPnLPct := 0.0
 	if at.initialBalance > 0 {
@@ -1670,7 +1697,7 @@ func (at *AutoTrader) GetAccountInfo() (map[string]interface{}, error) {
 		// Core fields
 		"total_equity":      totalEquity,           // Account equity = wallet + unrealized
 		"wallet_balance":    totalWalletBalance,    // Wallet balance (excluding unrealized P&L)
-		"unrealized_profit": totalUnrealizedProfit, // Unrealized P&L (official value from exchange API)
+		"unrealized_profit": totalUnrealizedProfit, // Unrealized P&L (from snapshot)
 		"available_balance": availableBalance,      // Available balance
 
 		// P&L statistics
@@ -1680,9 +1707,13 @@ func (at *AutoTrader) GetAccountInfo() (map[string]interface{}, error) {
 		"daily_pnl":       at.dailyPnL,       // Daily P&L
 
 		// Position information
-		"position_count":  len(positions),  // Position count
-		"margin_used":     totalMarginUsed, // Margin used
-		"margin_used_pct": marginUsedPct,   // Margin usage rate
+		"position_count":  len(snapshot.Positions), // Position count
+		"margin_used":     totalMarginUsed,         // Margin used
+		"margin_used_pct": marginUsedPct,           // Margin usage rate
+
+		// Snapshot metadata (for debugging)
+		"snapshot_cache_hit": snapshot.CacheHit,
+		"snapshot_timestamp": snapshot.Timestamp.Unix(),
 	}, nil
 }
 
@@ -1887,12 +1918,14 @@ func (at *AutoTrader) emergencyClosePosition(symbol, side string) error {
 		if err != nil {
 			return err
 		}
+		at.trader.InvalidateCache() // Invalidate cache after trade
 		logger.Infof("✅ Emergency close long position succeeded, order ID: %v", order["orderId"])
 	case "short":
 		order, err := at.trader.CloseShort(symbol, 0) // 0 = close all
 		if err != nil {
 			return err
 		}
+		at.trader.InvalidateCache() // Invalidate cache after trade
 		logger.Infof("✅ Emergency close short position succeeded, order ID: %v", order["orderId"])
 	default:
 		return fmt.Errorf("unknown position direction: %s", side)

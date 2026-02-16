@@ -104,6 +104,66 @@ type RecentOrder struct {
 	HoldDuration string  `json:"hold_duration"` // Hold duration, e.g. "2h30m"
 }
 
+// HistorySummaryData trading history summary for AI experience context
+type HistorySummaryData struct {
+	TotalTrades    int
+	WinRate        float64
+	TotalPnL       float64
+	AvgTradeReturn float64
+	ProfitFactor   float64
+	SharpeRatio    float64
+	AvgWin         float64
+	AvgLoss        float64
+	MaxDrawdownPct float64
+
+	// Symbol insights
+	BestSymbols  []SymbolInsight
+	WorstSymbols []SymbolInsight
+
+	// Direction insights
+	LongWinRate  float64
+	ShortWinRate float64
+	LongPnL      float64
+	ShortPnL     float64
+
+	// Timing insights
+	BestHoldRange  string
+	AvgHoldingMins float64
+
+	// Streak awareness
+	CurrentStreak int // positive = wins, negative = losses
+	MaxWinStreak  int
+	MaxLoseStreak int
+
+	// Recent performance (last 20 trades)
+	RecentWinRate float64
+	RecentPnL     float64
+}
+
+// SymbolInsight per-symbol performance insight
+type SymbolInsight struct {
+	Symbol   string
+	Trades   int
+	WinRate  float64
+	TotalPnL float64
+}
+
+// DecisionSummaryData condensed past AI decision for experience context
+type DecisionSummaryData struct {
+	Timestamp string // formatted time
+	Actions   []ActionSummary
+	Success   bool
+}
+
+// ActionSummary condensed action within a decision
+type ActionSummary struct {
+	Action     string
+	Symbol     string
+	Confidence int
+	Reasoning  string // max 80 chars
+	Succeeded  bool
+}
+
 // Context trading context (complete information passed to AI)
 type Context struct {
 	CurrentTime     string                             `json:"current_time"`
@@ -115,6 +175,8 @@ type Context struct {
 	PromptVariant   string                             `json:"prompt_variant,omitempty"`
 	TradingStats    *TradingStats                      `json:"trading_stats,omitempty"`
 	RecentOrders    []RecentOrder                      `json:"recent_orders,omitempty"`
+	HistorySummary  *HistorySummaryData                `json:"-"` // Comprehensive history for experience section
+	RecentDecisions []DecisionSummaryData              `json:"-"` // Condensed recent AI decisions
 	MarketDataMap   map[string]*market.Data            `json:"-"`
 	MultiTFMarket   map[string]map[string]*market.Data `json:"-"`
 	OITopDataMap    map[string]*OITopData              `json:"-"`
@@ -1126,6 +1188,294 @@ func (e *StrategyEngine) writeAvailableIndicators(sb *strings.Builder) {
 }
 
 // ============================================================================
+// Prompt Building - Trading Experience Section
+// ============================================================================
+
+// writeExperienceSection writes the unified Trading Experience section to the prompt
+func (e *StrategyEngine) writeExperienceSection(sb *strings.Builder, ctx *Context) {
+	hasHistory := ctx.HistorySummary != nil && ctx.HistorySummary.TotalTrades > 0
+	hasDecisions := len(ctx.RecentDecisions) > 0
+	hasOrders := len(ctx.RecentOrders) > 0
+	hasFallbackStats := !hasHistory && ctx.TradingStats != nil && ctx.TradingStats.TotalTrades > 0
+
+	if !hasHistory && !hasDecisions && !hasOrders && !hasFallbackStats {
+		return
+	}
+
+	lang := e.GetLanguage()
+	if lang == LangChinese {
+		e.writeExperienceSectionZH(sb, ctx, hasHistory, hasDecisions, hasOrders, hasFallbackStats)
+	} else {
+		e.writeExperienceSectionEN(sb, ctx, hasHistory, hasDecisions, hasOrders, hasFallbackStats)
+	}
+}
+
+func (e *StrategyEngine) writeExperienceSectionEN(sb *strings.Builder, ctx *Context, hasHistory, hasDecisions, hasOrders, hasFallbackStats bool) {
+	sb.WriteString("## Trading Experience\n\n")
+
+	// Performance Overview
+	if hasHistory {
+		h := ctx.HistorySummary
+		var winLossRatio float64
+		if h.AvgLoss > 0 {
+			winLossRatio = h.AvgWin / h.AvgLoss
+		}
+		sb.WriteString("### Performance Overview\n")
+		sb.WriteString(fmt.Sprintf("Total: %d trades | Win Rate: %.1f%% | PF: %.2f | Sharpe: %.2f | PnL: %+.2f USDT\n",
+			h.TotalTrades, h.WinRate, h.ProfitFactor, h.SharpeRatio, h.TotalPnL))
+		sb.WriteString(fmt.Sprintf("Recent 20: Win %.1f%% | PnL: %+.2f | W/L Ratio: %.2f | Avg Win: +%.2f | Avg Loss: -%.2f | Max DD: %.1f%%\n",
+			h.RecentWinRate, h.RecentPnL, winLossRatio, h.AvgWin, h.AvgLoss, h.MaxDrawdownPct))
+
+		// Streak
+		if h.CurrentStreak > 0 {
+			sb.WriteString(fmt.Sprintf("Streak: %d wins in a row", h.CurrentStreak))
+		} else if h.CurrentStreak < 0 {
+			sb.WriteString(fmt.Sprintf("Streak: %d losses in a row", -h.CurrentStreak))
+		}
+		if h.MaxWinStreak > 0 || h.MaxLoseStreak > 0 {
+			if h.CurrentStreak != 0 {
+				sb.WriteString(fmt.Sprintf(" | Max win: %d | Max lose: %d", h.MaxWinStreak, h.MaxLoseStreak))
+			} else {
+				sb.WriteString(fmt.Sprintf("Streak: Max win: %d | Max lose: %d", h.MaxWinStreak, h.MaxLoseStreak))
+			}
+		}
+		if h.CurrentStreak != 0 || h.MaxWinStreak > 0 || h.MaxLoseStreak > 0 {
+			sb.WriteString("\n")
+		}
+
+		// Performance hint
+		if h.ProfitFactor >= 1.5 && h.SharpeRatio >= 1 {
+			sb.WriteString("Performance: GOOD - maintain current strategy\n")
+		} else if h.ProfitFactor < 1 {
+			sb.WriteString("Performance: NEEDS IMPROVEMENT - improve win/loss ratio\n")
+		} else if h.MaxDrawdownPct > 30 {
+			sb.WriteString("Performance: HIGH RISK - reduce position size\n")
+		} else {
+			sb.WriteString("Performance: NORMAL - room for optimization\n")
+		}
+		sb.WriteString("\n")
+
+		// Symbol Insights
+		if len(h.BestSymbols) > 0 || len(h.WorstSymbols) > 0 {
+			sb.WriteString("### Symbol Insights\n")
+			if len(h.BestSymbols) > 0 {
+				sb.WriteString("Best: ")
+				for i, s := range h.BestSymbols {
+					if i > 0 {
+						sb.WriteString(" | ")
+					}
+					sb.WriteString(fmt.Sprintf("%s (%d trades, %.0f%% win, %+.2f)", s.Symbol, s.Trades, s.WinRate, s.TotalPnL))
+				}
+				sb.WriteString("\n")
+			}
+			if len(h.WorstSymbols) > 0 {
+				sb.WriteString("Avoid: ")
+				for i, s := range h.WorstSymbols {
+					if i > 0 {
+						sb.WriteString(" | ")
+					}
+					sb.WriteString(fmt.Sprintf("%s (%d trades, %.0f%% win, %+.2f)", s.Symbol, s.Trades, s.WinRate, s.TotalPnL))
+				}
+				sb.WriteString("\n")
+			}
+			sb.WriteString("\n")
+		}
+
+		// Direction & Timing
+		if h.LongWinRate > 0 || h.ShortWinRate > 0 {
+			sb.WriteString("### Direction & Timing\n")
+			sb.WriteString(fmt.Sprintf("Long: %.0f%% win, %+.2f PnL | Short: %.0f%% win, %+.2f PnL",
+				h.LongWinRate, h.LongPnL, h.ShortWinRate, h.ShortPnL))
+			if h.BestHoldRange != "" {
+				sb.WriteString(fmt.Sprintf(" | Best hold: %s", h.BestHoldRange))
+			}
+			sb.WriteString("\n\n")
+		}
+	} else if hasFallbackStats {
+		// Fallback: use TradingStats if HistorySummary is not available
+		stats := ctx.TradingStats
+		var winLossRatio float64
+		if stats.AvgLoss > 0 {
+			winLossRatio = stats.AvgWin / stats.AvgLoss
+		}
+		sb.WriteString("### Performance Overview\n")
+		sb.WriteString(fmt.Sprintf("Total: %d trades | Win Rate: %.1f%% | PF: %.2f | Sharpe: %.2f | W/L Ratio: %.2f\n",
+			stats.TotalTrades, stats.WinRate, stats.ProfitFactor, stats.SharpeRatio, winLossRatio))
+		sb.WriteString(fmt.Sprintf("PnL: %+.2f USDT | Avg Win: +%.2f | Avg Loss: -%.2f | Max DD: %.1f%%\n\n",
+			stats.TotalPnL, stats.AvgWin, stats.AvgLoss, stats.MaxDrawdownPct))
+	}
+
+	// Recent Decisions
+	if hasDecisions {
+		sb.WriteString("### Recent Decisions\n")
+		for i, d := range ctx.RecentDecisions {
+			if len(d.Actions) == 0 {
+				continue
+			}
+			a := d.Actions[0] // Primary action
+			statusStr := "OK"
+			if !d.Success {
+				statusStr = "FAIL"
+			}
+			symbol := a.Symbol
+			if symbol == "" {
+				symbol = "-"
+			}
+			reasoning := a.Reasoning
+			if reasoning != "" {
+				reasoning = fmt.Sprintf(" | \"%s\"", reasoning)
+			}
+			sb.WriteString(fmt.Sprintf("%d. [%s] %s %s (%d) -> %s%s\n",
+				i+1, d.Timestamp, a.Action, symbol, a.Confidence, statusStr, reasoning))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Recent Closed Trades
+	if hasOrders {
+		sb.WriteString("### Recent Closed Trades\n")
+		for i, order := range ctx.RecentOrders {
+			sb.WriteString(fmt.Sprintf("%d. %s %s | %+.2f USDT (%+.2f%%) | %s\n",
+				i+1, order.Symbol, order.Side,
+				order.RealizedPnL, order.PnLPct, order.HoldDuration))
+		}
+		sb.WriteString("\n")
+	}
+}
+
+func (e *StrategyEngine) writeExperienceSectionZH(sb *strings.Builder, ctx *Context, hasHistory, hasDecisions, hasOrders, hasFallbackStats bool) {
+	sb.WriteString("## 交易经验\n\n")
+
+	// Performance Overview
+	if hasHistory {
+		h := ctx.HistorySummary
+		var winLossRatio float64
+		if h.AvgLoss > 0 {
+			winLossRatio = h.AvgWin / h.AvgLoss
+		}
+		sb.WriteString("### 业绩概览\n")
+		sb.WriteString(fmt.Sprintf("总计: %d 笔 | 胜率: %.1f%% | 盈利因子: %.2f | 夏普: %.2f | 盈亏: %+.2f USDT\n",
+			h.TotalTrades, h.WinRate, h.ProfitFactor, h.SharpeRatio, h.TotalPnL))
+		sb.WriteString(fmt.Sprintf("近20笔: 胜率 %.1f%% | 盈亏: %+.2f | 盈亏比: %.2f | 均盈: +%.2f | 均亏: -%.2f | 最大回撤: %.1f%%\n",
+			h.RecentWinRate, h.RecentPnL, winLossRatio, h.AvgWin, h.AvgLoss, h.MaxDrawdownPct))
+
+		// Streak
+		if h.CurrentStreak > 0 {
+			sb.WriteString(fmt.Sprintf("连胜: %d 笔", h.CurrentStreak))
+		} else if h.CurrentStreak < 0 {
+			sb.WriteString(fmt.Sprintf("连亏: %d 笔", -h.CurrentStreak))
+		}
+		if h.MaxWinStreak > 0 || h.MaxLoseStreak > 0 {
+			if h.CurrentStreak != 0 {
+				sb.WriteString(fmt.Sprintf(" | 最大连胜: %d | 最大连亏: %d", h.MaxWinStreak, h.MaxLoseStreak))
+			} else {
+				sb.WriteString(fmt.Sprintf("最大连胜: %d | 最大连亏: %d", h.MaxWinStreak, h.MaxLoseStreak))
+			}
+		}
+		if h.CurrentStreak != 0 || h.MaxWinStreak > 0 || h.MaxLoseStreak > 0 {
+			sb.WriteString("\n")
+		}
+
+		// Performance hint
+		if h.ProfitFactor >= 1.5 && h.SharpeRatio >= 1 {
+			sb.WriteString("表现: 良好 - 保持当前策略\n")
+		} else if h.ProfitFactor < 1 {
+			sb.WriteString("表现: 需改进 - 提高盈亏比，优化止盈止损\n")
+		} else if h.MaxDrawdownPct > 30 {
+			sb.WriteString("表现: 风险偏高 - 减少仓位，控制回撤\n")
+		} else {
+			sb.WriteString("表现: 正常 - 有优化空间\n")
+		}
+		sb.WriteString("\n")
+
+		// Symbol Insights
+		if len(h.BestSymbols) > 0 || len(h.WorstSymbols) > 0 {
+			sb.WriteString("### 币种洞察\n")
+			if len(h.BestSymbols) > 0 {
+				sb.WriteString("擅长: ")
+				for i, s := range h.BestSymbols {
+					if i > 0 {
+						sb.WriteString(" | ")
+					}
+					sb.WriteString(fmt.Sprintf("%s (%d笔, 胜率%.0f%%, %+.2f)", s.Symbol, s.Trades, s.WinRate, s.TotalPnL))
+				}
+				sb.WriteString("\n")
+			}
+			if len(h.WorstSymbols) > 0 {
+				sb.WriteString("回避: ")
+				for i, s := range h.WorstSymbols {
+					if i > 0 {
+						sb.WriteString(" | ")
+					}
+					sb.WriteString(fmt.Sprintf("%s (%d笔, 胜率%.0f%%, %+.2f)", s.Symbol, s.Trades, s.WinRate, s.TotalPnL))
+				}
+				sb.WriteString("\n")
+			}
+			sb.WriteString("\n")
+		}
+
+		// Direction & Timing
+		if h.LongWinRate > 0 || h.ShortWinRate > 0 {
+			sb.WriteString("### 方向与时机\n")
+			sb.WriteString(fmt.Sprintf("做多: 胜率%.0f%%, %+.2f | 做空: 胜率%.0f%%, %+.2f",
+				h.LongWinRate, h.LongPnL, h.ShortWinRate, h.ShortPnL))
+			if h.BestHoldRange != "" {
+				sb.WriteString(fmt.Sprintf(" | 最佳持仓: %s", h.BestHoldRange))
+			}
+			sb.WriteString("\n\n")
+		}
+	} else if hasFallbackStats {
+		stats := ctx.TradingStats
+		var winLossRatio float64
+		if stats.AvgLoss > 0 {
+			winLossRatio = stats.AvgWin / stats.AvgLoss
+		}
+		sb.WriteString("### 业绩概览\n")
+		sb.WriteString(fmt.Sprintf("总计: %d 笔 | 胜率: %.1f%% | 盈利因子: %.2f | 夏普: %.2f | 盈亏比: %.2f\n",
+			stats.TotalTrades, stats.WinRate, stats.ProfitFactor, stats.SharpeRatio, winLossRatio))
+		sb.WriteString(fmt.Sprintf("盈亏: %+.2f USDT | 均盈: +%.2f | 均亏: -%.2f | 最大回撤: %.1f%%\n\n",
+			stats.TotalPnL, stats.AvgWin, stats.AvgLoss, stats.MaxDrawdownPct))
+	}
+
+	// Recent Decisions
+	if hasDecisions {
+		sb.WriteString("### 近期决策\n")
+		for i, d := range ctx.RecentDecisions {
+			if len(d.Actions) == 0 {
+				continue
+			}
+			a := d.Actions[0]
+			statusStr := "OK"
+			if !d.Success {
+				statusStr = "失败"
+			}
+			symbol := a.Symbol
+			if symbol == "" {
+				symbol = "-"
+			}
+			reasoning := a.Reasoning
+			if reasoning != "" {
+				reasoning = fmt.Sprintf(" | \"%s\"", reasoning)
+			}
+			sb.WriteString(fmt.Sprintf("%d. [%s] %s %s (%d) -> %s%s\n",
+				i+1, d.Timestamp, a.Action, symbol, a.Confidence, statusStr, reasoning))
+		}
+		sb.WriteString("\n")
+	}
+
+	// Recent Closed Trades
+	if hasOrders {
+		sb.WriteString("### 近期平仓\n")
+		for i, order := range ctx.RecentOrders {
+			sb.WriteString(fmt.Sprintf("%d. %s %s | %+.2f USDT (%+.2f%%) | %s\n",
+				i+1, order.Symbol, order.Side,
+				order.RealizedPnL, order.PnLPct, order.HoldDuration))
+		}
+		sb.WriteString("\n")
+	}
+}
+
+// ============================================================================
 // Prompt Building - User Prompt
 // ============================================================================
 
@@ -1153,83 +1503,8 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 		ctx.Account.MarginUsedPct,
 		ctx.Account.PositionCount))
 
-	// Recently completed orders (placed before positions to ensure visibility)
-	if len(ctx.RecentOrders) > 0 {
-		sb.WriteString("## Recent Completed Trades\n")
-		for i, order := range ctx.RecentOrders {
-			resultStr := "Profit"
-			if order.RealizedPnL < 0 {
-				resultStr = "Loss"
-			}
-			sb.WriteString(fmt.Sprintf("%d. %s %s | Entry %.4f Exit %.4f | %s: %+.2f USDT (%+.2f%%) | %s→%s (%s)\n",
-				i+1, order.Symbol, order.Side,
-				order.EntryPrice, order.ExitPrice,
-				resultStr, order.RealizedPnL, order.PnLPct,
-				order.EntryTime, order.ExitTime, order.HoldDuration))
-		}
-		sb.WriteString("\n")
-	}
-
-	// Historical trading statistics (helps AI understand past performance)
-	if ctx.TradingStats != nil && ctx.TradingStats.TotalTrades > 0 {
-		// Get language from strategy config
-		lang := e.GetLanguage()
-
-		// Win/Loss ratio
-		var winLossRatio float64
-		if ctx.TradingStats.AvgLoss > 0 {
-			winLossRatio = ctx.TradingStats.AvgWin / ctx.TradingStats.AvgLoss
-		}
-
-		if lang == LangChinese {
-			sb.WriteString("## 历史交易统计\n")
-			sb.WriteString(fmt.Sprintf("总交易: %d 笔 | 盈利因子: %.2f | 夏普比率: %.2f | 盈亏比: %.2f\n",
-				ctx.TradingStats.TotalTrades,
-				ctx.TradingStats.ProfitFactor,
-				ctx.TradingStats.SharpeRatio,
-				winLossRatio))
-			sb.WriteString(fmt.Sprintf("总盈亏: %+.2f USDT | 平均盈利: +%.2f | 平均亏损: -%.2f | 最大回撤: %.1f%%\n",
-				ctx.TradingStats.TotalPnL,
-				ctx.TradingStats.AvgWin,
-				ctx.TradingStats.AvgLoss,
-				ctx.TradingStats.MaxDrawdownPct))
-
-			// Performance hints based on profit factor, sharpe, and drawdown
-			if ctx.TradingStats.ProfitFactor >= 1.5 && ctx.TradingStats.SharpeRatio >= 1 {
-				sb.WriteString("表现: 良好 - 保持当前策略\n")
-			} else if ctx.TradingStats.ProfitFactor < 1 {
-				sb.WriteString("表现: 需改进 - 提高盈亏比，优化止盈止损\n")
-			} else if ctx.TradingStats.MaxDrawdownPct > 30 {
-				sb.WriteString("表现: 风险偏高 - 减少仓位，控制回撤\n")
-			} else {
-				sb.WriteString("表现: 正常 - 有优化空间\n")
-			}
-		} else {
-			sb.WriteString("## Historical Trading Statistics\n")
-			sb.WriteString(fmt.Sprintf("Total Trades: %d | Profit Factor: %.2f | Sharpe: %.2f | Win/Loss Ratio: %.2f\n",
-				ctx.TradingStats.TotalTrades,
-				ctx.TradingStats.ProfitFactor,
-				ctx.TradingStats.SharpeRatio,
-				winLossRatio))
-			sb.WriteString(fmt.Sprintf("Total PnL: %+.2f USDT | Avg Win: +%.2f | Avg Loss: -%.2f | Max Drawdown: %.1f%%\n",
-				ctx.TradingStats.TotalPnL,
-				ctx.TradingStats.AvgWin,
-				ctx.TradingStats.AvgLoss,
-				ctx.TradingStats.MaxDrawdownPct))
-
-			// Performance hints based on profit factor, sharpe, and drawdown
-			if ctx.TradingStats.ProfitFactor >= 1.5 && ctx.TradingStats.SharpeRatio >= 1 {
-				sb.WriteString("Performance: GOOD - maintain current strategy\n")
-			} else if ctx.TradingStats.ProfitFactor < 1 {
-				sb.WriteString("Performance: NEEDS IMPROVEMENT - improve win/loss ratio, optimize TP/SL\n")
-			} else if ctx.TradingStats.MaxDrawdownPct > 30 {
-				sb.WriteString("Performance: HIGH RISK - reduce position size, control drawdown\n")
-			} else {
-				sb.WriteString("Performance: NORMAL - room for optimization\n")
-			}
-		}
-		sb.WriteString("\n")
-	}
+	// Trading Experience section (unified: stats + insights + recent decisions + recent trades)
+	e.writeExperienceSection(&sb, ctx)
 
 	// Position information
 	if len(ctx.Positions) > 0 {
@@ -1409,7 +1684,21 @@ func (e *StrategyEngine) formatMarketData(data *market.Data) string {
 		sb.WriteString(fmt.Sprintf(", current_rsi7 = %.3f", data.CurrentRSI7))
 	}
 
-	sb.WriteString("\n\n")
+	sb.WriteString("\n")
+
+	// 添加成交量信息（补充删除的 K 线中的 Volume）
+	if len(data.TimeframeData) > 0 {
+		// 从主时间框架获取最新成交量
+		primaryTF := indicators.Klines.PrimaryTimeframe
+		if tfData, ok := data.TimeframeData[primaryTF]; ok {
+			if len(tfData.Klines) > 0 {
+				latestKline := tfData.Klines[len(tfData.Klines)-1]
+				sb.WriteString(fmt.Sprintf("latest_volume (%s) = %.2f\n", primaryTF, latestKline.Volume))
+			}
+		}
+	}
+
+	sb.WriteString("\n")
 
 	if indicators.EnableOI || indicators.EnableFundingRate {
 		sb.WriteString(fmt.Sprintf("Additional data for %s:\n\n", data.Symbol))
@@ -1499,57 +1788,91 @@ func (e *StrategyEngine) formatMarketData(data *market.Data) string {
 	return sb.String()
 }
 
+// FormatMarketDataForTest 公开的测试方法，用于验证优化效果
+func (e *StrategyEngine) FormatMarketDataForTest(data *market.Data) string {
+	return e.formatMarketData(data)
+}
+
 func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *market.TimeframeSeriesData, indicators store.IndicatorConfig) {
-	if len(data.Klines) > 0 {
-		sb.WriteString("Time(UTC)      Open      High      Low       Close     Volume\n")
-		for i, k := range data.Klines {
-			t := time.Unix(k.Time/1000, 0).UTC()
-			timeStr := t.Format("01-02 15:04")
-			marker := ""
-			if i == len(data.Klines)-1 {
-				marker = "  <- current"
-			}
-			sb.WriteString(fmt.Sprintf("%-14s %-9.4f %-9.4f %-9.4f %-9.4f %-12.2f%s\n",
-				timeStr, k.Open, k.High, k.Low, k.Close, k.Volume, marker))
-		}
-		sb.WriteString("\n")
-	} else if len(data.MidPrices) > 0 {
-		sb.WriteString(fmt.Sprintf("Mid prices: %s\n\n", formatFloatSlice(data.MidPrices)))
-		if indicators.EnableVolume && len(data.Volume) > 0 {
-			sb.WriteString(fmt.Sprintf("Volume: %s\n\n", formatFloatSlice(data.Volume)))
-		}
-	}
+	// K 线表格已移除 - 技术指标已包含所有关键信息
+	// 保留当前价格将在 formatMarketData() 中单独输出
 
 	if indicators.EnableEMA {
-		if len(data.EMA20Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA20: %s\n", formatFloatSlice(data.EMA20Values)))
-		}
-		if len(data.EMA50Values) > 0 {
-			sb.WriteString(fmt.Sprintf("EMA50: %s\n", formatFloatSlice(data.EMA50Values)))
+		if len(data.EMA20Values) > 0 && len(data.EMA50Values) > 0 {
+			// 压缩：只保留最后 5 个值
+			ema20Recent := CompressFloatArray(data.EMA20Values, 5)
+			ema50Recent := CompressFloatArray(data.EMA50Values, 5)
+
+			// 计算趋势
+			ema20Trend := CalculateTrend(data.EMA20Values)
+			cross := DetectEMACross(data.EMA20Values, data.EMA50Values)
+
+			sb.WriteString(fmt.Sprintf("EMA20: %s (trend: %s)\n",
+				FormatFloatArrayCompressed(ema20Recent, 2), ema20Trend))
+			sb.WriteString(fmt.Sprintf("EMA50: %s\n",
+				FormatFloatArrayCompressed(ema50Recent, 2)))
+			sb.WriteString(fmt.Sprintf("EMA Cross: %s\n", cross))
 		}
 	}
 
 	if indicators.EnableMACD && len(data.MACDValues) > 0 {
-		sb.WriteString(fmt.Sprintf("MACD: %s\n", formatFloatSlice(data.MACDValues)))
+		// 压缩
+		macdRecent := CompressFloatArray(data.MACDValues, 5)
+		macdSignal := SummarizeMACD(data.MACDValues)
+
+		sb.WriteString(fmt.Sprintf("MACD: %s (signal: %s)\n",
+			FormatFloatArrayCompressed(macdRecent, 4), macdSignal))
 	}
 
 	if indicators.EnableRSI {
 		if len(data.RSI7Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI7: %s\n", formatFloatSlice(data.RSI7Values)))
+			rsi7Recent := CompressFloatArray(data.RSI7Values, 5)
+			current := data.RSI7Values[len(data.RSI7Values)-1]
+			zone := SummarizeRSI(current)
+
+			sb.WriteString(fmt.Sprintf("RSI7: %s (zone: %s)\n",
+				FormatFloatArrayCompressed(rsi7Recent, 2), zone))
 		}
 		if len(data.RSI14Values) > 0 {
-			sb.WriteString(fmt.Sprintf("RSI14: %s\n", formatFloatSlice(data.RSI14Values)))
+			rsi14Recent := CompressFloatArray(data.RSI14Values, 5)
+			current := data.RSI14Values[len(data.RSI14Values)-1]
+			zone := SummarizeRSI(current)
+
+			sb.WriteString(fmt.Sprintf("RSI14: %s (zone: %s)\n",
+				FormatFloatArrayCompressed(rsi14Recent, 2), zone))
 		}
 	}
 
 	if indicators.EnableATR && data.ATR14 > 0 {
+		// ATR 已经是单值，保持不变
 		sb.WriteString(fmt.Sprintf("ATR14: %.4f\n", data.ATR14))
 	}
 
 	if indicators.EnableBOLL && len(data.BOLLUpper) > 0 {
-		sb.WriteString(fmt.Sprintf("BOLL Upper: %s\n", formatFloatSlice(data.BOLLUpper)))
-		sb.WriteString(fmt.Sprintf("BOLL Middle: %s\n", formatFloatSlice(data.BOLLMiddle)))
-		sb.WriteString(fmt.Sprintf("BOLL Lower: %s\n", formatFloatSlice(data.BOLLLower)))
+		// 压缩布林带
+		upperRecent := CompressFloatArray(data.BOLLUpper, 3)
+		middleRecent := CompressFloatArray(data.BOLLMiddle, 3)
+		lowerRecent := CompressFloatArray(data.BOLLLower, 3)
+
+		// 计算价格位置（需要当前价格）
+		currentPrice := 0.0
+		if len(data.Klines) > 0 {
+			currentPrice = data.Klines[len(data.Klines)-1].Close
+		}
+		position := "unknown"
+		if currentPrice > 0 && len(data.BOLLUpper) > 0 {
+			position = CalculateBBPosition(
+				currentPrice,
+				data.BOLLUpper[len(data.BOLLUpper)-1],
+				data.BOLLMiddle[len(data.BOLLMiddle)-1],
+				data.BOLLLower[len(data.BOLLLower)-1],
+			)
+		}
+
+		sb.WriteString(fmt.Sprintf("BOLL Upper: %s\n", FormatFloatArrayCompressed(upperRecent, 2)))
+		sb.WriteString(fmt.Sprintf("BOLL Middle: %s\n", FormatFloatArrayCompressed(middleRecent, 2)))
+		sb.WriteString(fmt.Sprintf("BOLL Lower: %s (position: %s)\n",
+			FormatFloatArrayCompressed(lowerRecent, 2), position))
 	}
 
 	sb.WriteString("\n")

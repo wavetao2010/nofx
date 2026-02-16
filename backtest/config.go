@@ -29,7 +29,8 @@ type BacktestConfig struct {
 	RunID                string   `json:"run_id"`
 	UserID               string   `json:"user_id,omitempty"`
 	AIModelID            string   `json:"ai_model_id,omitempty"`
-	StrategyID           string   `json:"strategy_id,omitempty"` // Optional: use saved strategy from Strategy Studio
+	StrategyID           string   `json:"strategy_id,omitempty"`   // Optional: use saved strategy from Strategy Studio
+	StrategyName         string   `json:"strategy_name,omitempty"` // Strategy name for display (set by API when loading strategy)
 	Symbols              []string `json:"symbols"`
 	Timeframes           []string `json:"timeframes"`
 	DecisionTimeframe    string   `json:"decision_timeframe"`
@@ -190,12 +191,21 @@ func (cfg *BacktestConfig) SetLoadedStrategy(strategy *store.StrategyConfig) {
 // ToStrategyConfig converts BacktestConfig to StrategyConfig for unified prompt generation.
 // This ensures backtest uses the same StrategyEngine logic as live trading.
 // If a strategy was loaded from database (via StrategyID), it will be used with overrides.
+// IMPORTANT: This method preserves all strategy configuration including:
+// - PromptSections (custom prompt sections)
+// - Indicators (all indicator switches and configurations)
+// - Language setting
+// - RiskControl (all risk parameters)
+// Only backtest-specific fields (symbols, timeframes, leverage) are overridden when provided.
 func (cfg *BacktestConfig) ToStrategyConfig() *store.StrategyConfig {
 	// If a strategy was loaded from database, use it with some overrides
 	if cfg.loadedStrategy != nil {
-		result := *cfg.loadedStrategy // Make a copy
+		// Deep copy the strategy config to preserve all configurations
+		// including PromptSections, Indicators, Language, RiskControl, etc.
+		result := *cfg.loadedStrategy
 
 		// Override coin source with backtest symbols (回测指定的币对优先)
+		// Only override if symbols are explicitly provided in backtest config
 		if len(cfg.Symbols) > 0 {
 			result.CoinSource.SourceType = "static"
 			result.CoinSource.StaticCoins = cfg.Symbols
@@ -204,6 +214,7 @@ func (cfg *BacktestConfig) ToStrategyConfig() *store.StrategyConfig {
 		}
 
 		// Override timeframes with backtest config
+		// Only override if timeframes are explicitly provided in backtest config
 		if len(cfg.Timeframes) > 0 {
 			result.Indicators.Klines.SelectedTimeframes = cfg.Timeframes
 			result.Indicators.Klines.PrimaryTimeframe = cfg.Timeframes[0]
@@ -214,6 +225,7 @@ func (cfg *BacktestConfig) ToStrategyConfig() *store.StrategyConfig {
 		}
 
 		// Override leverage with backtest config
+		// Only override if explicitly set (> 0) in backtest config
 		if cfg.Leverage.BTCETHLeverage > 0 {
 			result.RiskControl.BTCETHMaxLeverage = cfg.Leverage.BTCETHLeverage
 		}
@@ -222,9 +234,19 @@ func (cfg *BacktestConfig) ToStrategyConfig() *store.StrategyConfig {
 		}
 
 		// Override custom prompt if provided in backtest config
+		// This allows adding additional prompt text on top of strategy's custom prompt
 		if cfg.CustomPrompt != "" {
 			result.CustomPrompt = cfg.CustomPrompt
 		}
+
+		// Note: The following are preserved from the loaded strategy:
+		// - result.Language (strategy's language setting)
+		// - result.PromptSections (role definition, trading frequency, entry standards, decision process)
+		// - result.Indicators.Enable* (all indicator switches)
+		// - result.Indicators.*Periods (all period configurations)
+		// - result.Indicators.NofxOSAPIKey (NofxOS API key)
+		// - result.Indicators.EnableQuantData, EnableOIRanking, EnableNetFlowRanking, EnablePriceRanking
+		// - result.RiskControl (MaxPositions, MaxMarginUsage, MinPositionSize, etc.)
 
 		return &result
 	}

@@ -896,6 +896,22 @@ export function BacktestPage() {
     }
   }, [aiModels, formState.aiModelId])
 
+  // Read strategy parameter from URL and auto-select
+  useEffect(() => {
+    const params = new URLSearchParams(window.location.search)
+    const strategyParam = params.get('strategy')
+    if (strategyParam && strategies?.length) {
+      // Check if the strategy exists in the list
+      const strategyExists = strategies.some((s) => s.id === strategyParam)
+      if (strategyExists && formState.strategyId !== strategyParam) {
+        setFormState((s) => ({ ...s, strategyId: strategyParam }))
+        // Clear URL parameter after setting to avoid re-triggering
+        const newUrl = window.location.pathname + window.location.hash
+        window.history.replaceState({}, '', newUrl)
+      }
+    }
+  }, [strategies, formState.strategyId])
+
   // Auto-select first run
   useEffect(() => {
     if (!selectedRunId && runs.length > 0) {
@@ -1218,20 +1234,114 @@ export function BacktestPage() {
                             </option>
                           ))}
                         </select>
-                        {formState.strategyId && coinSourceDescription && (
-                          <div className="mt-2 p-2 rounded" style={{ background: 'rgba(240,185,11,0.1)', border: '1px solid rgba(240,185,11,0.2)' }}>
-                            <div className="flex items-center gap-2 text-xs">
-                              <span style={{ color: '#F0B90B' }}>
-                                {language === 'zh' ? '币种来源:' : 'Coin Source:'}
-                              </span>
-                              <span className="font-medium" style={{ color: '#EAECEF' }}>
-                                {coinSourceDescription.type}
-                                {coinSourceDescription.limit && ` (${coinSourceDescription.limit})`}
-                                {coinSourceDescription.desc && ` - ${coinSourceDescription.desc}`}
+                        {/* Strategy Configuration Summary */}
+                        {selectedStrategy && (
+                          <div className="mt-3 p-3 rounded-lg" style={{ background: 'rgba(30, 35, 41, 0.8)', border: '1px solid #2B3139' }}>
+                            <div className="flex items-center gap-2 mb-2">
+                              <Zap className="w-3.5 h-3.5" style={{ color: '#F0B90B' }} />
+                              <span className="text-xs font-medium" style={{ color: '#EAECEF' }}>
+                                {language === 'zh' ? '策略配置摘要' : 'Strategy Configuration Summary'}
                               </span>
                             </div>
+                            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5 text-xs">
+                              {/* Strategy Type */}
+                              <div className="flex items-center gap-1.5">
+                                <span style={{ color: '#848E9C' }}>
+                                  {language === 'zh' ? '策略类型:' : 'Type:'}
+                                </span>
+                                <span className="font-medium" style={{ color: '#EAECEF' }}>
+                                  {selectedStrategy.config?.strategy_type === 'grid_trading'
+                                    ? (language === 'zh' ? 'AI 网格交易' : 'AI Grid Trading')
+                                    : (language === 'zh' ? 'AI 智能交易' : 'AI Trading')}
+                                </span>
+                              </div>
+                              {/* Coin Source */}
+                              <div className="flex items-center gap-1.5">
+                                <span style={{ color: '#848E9C' }}>
+                                  {language === 'zh' ? '币种来源:' : 'Coins:'}
+                                </span>
+                                <span className="font-medium" style={{ color: coinSourceDescription ? '#F0B90B' : '#EAECEF' }}>
+                                  {coinSourceDescription
+                                    ? `${coinSourceDescription.type}${coinSourceDescription.limit ? ` (${coinSourceDescription.limit})` : ''}`
+                                    : (selectedStrategy.config?.coin_source?.static_coins?.length
+                                      ? `${language === 'zh' ? '静态' : 'Static'} (${selectedStrategy.config.coin_source.static_coins.length})`
+                                      : (language === 'zh' ? '默认' : 'Default'))}
+                                </span>
+                              </div>
+                              {/* Technical Indicators */}
+                              <div className="flex items-center gap-1.5 col-span-2">
+                                <span style={{ color: '#848E9C' }}>
+                                  {language === 'zh' ? '技术指标:' : 'Indicators:'}
+                                </span>
+                                <span className="font-medium" style={{ color: '#EAECEF' }}>
+                                  {(() => {
+                                    const ind = selectedStrategy.config?.indicators
+                                    if (!ind) return language === 'zh' ? '默认' : 'Default'
+                                    const enabled = []
+                                    if (ind.enable_ema) enabled.push('EMA')
+                                    if (ind.enable_macd) enabled.push('MACD')
+                                    if (ind.enable_rsi) enabled.push('RSI')
+                                    if (ind.enable_atr) enabled.push('ATR')
+                                    if (ind.enable_boll) enabled.push('BOLL')
+                                    if (ind.enable_volume) enabled.push('VOL')
+                                    if (ind.enable_oi) enabled.push('OI')
+                                    if (ind.enable_funding_rate) enabled.push('FR')
+                                    return enabled.length > 0 ? enabled.join(', ') : (language === 'zh' ? '无' : 'None')
+                                  })()}
+                                </span>
+                              </div>
+                              {/* Risk Control */}
+                              <div className="flex items-center gap-1.5">
+                                <span style={{ color: '#848E9C' }}>
+                                  {language === 'zh' ? '最大持仓:' : 'Max Pos:'}
+                                </span>
+                                <span className="font-medium" style={{ color: '#EAECEF' }}>
+                                  {selectedStrategy.config?.risk_control?.max_positions ?? '-'}
+                                </span>
+                              </div>
+                              <div className="flex items-center gap-1.5">
+                                <span style={{ color: '#848E9C' }}>
+                                  {language === 'zh' ? '杠杆:' : 'Leverage:'}
+                                </span>
+                                <span className="font-medium" style={{ color: '#EAECEF' }}>
+                                  BTC/ETH {selectedStrategy.config?.risk_control?.btc_eth_max_leverage ?? '-'}x,{' '}
+                                  {language === 'zh' ? '山寨' : 'Alt'} {selectedStrategy.config?.risk_control?.altcoin_max_leverage ?? '-'}x
+                                </span>
+                              </div>
+                              {/* Prompt Status */}
+                              <div className="flex items-center gap-1.5 col-span-2">
+                                <span style={{ color: '#848E9C' }}>
+                                  {language === 'zh' ? 'Prompt:' : 'Prompt:'}
+                                </span>
+                                <span className="font-medium" style={{ color: selectedStrategy.config?.custom_prompt ? '#0ECB81' : '#848E9C' }}>
+                                  {selectedStrategy.config?.custom_prompt
+                                    ? (language === 'zh' ? '已自定义' : 'Customized')
+                                    : (language === 'zh' ? '默认' : 'Default')}
+                                </span>
+                              </div>
+                            </div>
+                            {/* Override Warning */}
+                            {(() => {
+                              const rc = selectedStrategy.config?.risk_control
+                              const btcLevDiff = rc?.btc_eth_max_leverage && formState.btcEthLeverage !== rc.btc_eth_max_leverage
+                              const altLevDiff = rc?.altcoin_max_leverage && formState.altcoinLeverage !== rc.altcoin_max_leverage
+                              if (btcLevDiff || altLevDiff) {
+                                return (
+                                  <div className="mt-2 p-2 rounded text-xs flex items-center gap-1.5" style={{ background: 'rgba(246,70,93,0.1)', border: '1px solid rgba(246,70,93,0.3)' }}>
+                                    <AlertTriangle className="w-3.5 h-3.5 flex-shrink-0" style={{ color: '#F6465D' }} />
+                                    <span style={{ color: '#F6465D' }}>
+                                      {language === 'zh'
+                                        ? '回测杠杆参数与策略配置不同，将使用回测参数'
+                                        : 'Backtest leverage differs from strategy config, backtest params will be used'}
+                                    </span>
+                                  </div>
+                                )
+                              }
+                              return null
+                            })()}
+                            {/* Dynamic Coins Hint */}
                             {strategyHasDynamicCoins && (
-                              <div className="text-xs mt-1" style={{ color: '#F0B90B' }}>
+                              <div className="mt-2 text-xs" style={{ color: '#F0B90B' }}>
                                 {language === 'zh'
                                   ? '⚡ 清空下方币种输入框即可使用策略的动态币种'
                                   : '⚡ Clear the symbols field below to use strategy\'s dynamic coins'}

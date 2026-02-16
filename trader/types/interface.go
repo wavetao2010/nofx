@@ -38,6 +38,32 @@ type TradeRecord struct {
 	Time         time.Time // Trade execution time
 }
 
+// AccountSnapshot represents a point-in-time account state
+// Ensures Balance and Positions data come from the same moment
+// This solves the data inconsistency issue caused by separate API calls
+type AccountSnapshot struct {
+	Timestamp        time.Time          // Snapshot timestamp
+	TotalEquity      float64            // Total account equity = WalletBalance + UnrealizedPnL
+	WalletBalance    float64            // Wallet balance (excluding unrealized PnL)
+	UnrealizedPnL    float64            // Total unrealized PnL from all positions
+	AvailableBalance float64            // Available balance for new trades
+	Positions        []PositionSnapshot // All open positions at this moment
+	CacheHit         bool               // Whether data came from cache
+	FetchDuration    time.Duration      // Time taken to fetch from exchange API
+}
+
+// PositionSnapshot represents a single position at a point in time
+type PositionSnapshot struct {
+	Symbol           string  // Trading pair (e.g., "BTCUSDT")
+	Side             string  // "LONG" or "SHORT"
+	Quantity         float64 // Position size (always positive)
+	EntryPrice       float64 // Average entry price
+	MarkPrice        float64 // Current mark price
+	UnrealizedPnL    float64 // Unrealized PnL for this position
+	Leverage         int     // Leverage used
+	LiquidationPrice float64 // Liquidation price
+}
+
 // Trader Unified trader interface
 // Supports multiple trading platforms (Binance, Hyperliquid, etc.)
 type Trader interface {
@@ -46,6 +72,15 @@ type Trader interface {
 
 	// GetPositions Get all positions
 	GetPositions() ([]map[string]interface{}, error)
+
+	// GetAccountSnapshot Get atomic account snapshot (balance + positions at same moment)
+	// This method ensures data consistency by fetching balance and positions together
+	// Falls back to separate GetBalance() + GetPositions() calls if not implemented
+	GetAccountSnapshot() (*AccountSnapshot, error)
+
+	// InvalidateCache Invalidates all cached data (balance, positions, snapshot)
+	// Should be called after trade execution to ensure fresh data on next request
+	InvalidateCache()
 
 	// OpenLong Open long position
 	OpenLong(symbol string, quantity float64, leverage int) (map[string]interface{}, error)

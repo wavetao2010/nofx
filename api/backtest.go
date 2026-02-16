@@ -91,6 +91,7 @@ func (s *Server) handleBacktestStart(c *gin.Context) {
 			return
 		}
 		cfg.SetLoadedStrategy(&strategyConfig)
+		cfg.StrategyName = strategy.Name // Record strategy name for display in backtest results
 		logger.Infof("📊 Backtest using saved strategy: %s (%s)", strategy.Name, strategy.ID)
 		logger.Infof("📊 Strategy coin source: type=%s, use_ai500=%v, use_oi_top=%v, static_coins=%v",
 			strategyConfig.CoinSource.SourceType,

@@ -239,9 +239,9 @@ function App() {
       : null,
     () => api.getStatus(selectedTraderId),
     {
-      refreshInterval: 15000, // 15秒刷新（配合后端15秒缓存）
+      refreshInterval: 30000, // 30秒刷新（配合后端30秒缓存，保证数据一致性）
       revalidateOnFocus: false, // 禁用聚焦时重新验证，减少请求
-      dedupingInterval: 10000, // 10秒去重，防止短时间内重复请求
+      dedupingInterval: 20000, // 20秒去重，防止短时间内重复请求
     }
   )
 
@@ -251,9 +251,9 @@ function App() {
       : null,
     () => api.getAccount(selectedTraderId),
     {
-      refreshInterval: 15000, // 15秒刷新（配合后端15秒缓存）
+      refreshInterval: 30000, // 30秒刷新（配合后端30秒缓存，保证数据一致性）
       revalidateOnFocus: false, // 禁用聚焦时重新验证，减少请求
-      dedupingInterval: 10000, // 10秒去重，防止短时间内重复请求
+      dedupingInterval: 20000, // 20秒去重，防止短时间内重复请求
     }
   )
 
@@ -263,9 +263,9 @@ function App() {
       : null,
     () => api.getPositions(selectedTraderId),
     {
-      refreshInterval: 15000, // 15秒刷新（配合后端15秒缓存）
+      refreshInterval: 30000, // 30秒刷新（配合后端30秒缓存，保证数据一致性）
       revalidateOnFocus: false, // 禁用聚焦时重新验证，减少请求
-      dedupingInterval: 10000, // 10秒去重，防止短时间内重复请求
+      dedupingInterval: 20000, // 20秒去重，防止短时间内重复请求
     }
   )
 
@@ -275,9 +275,9 @@ function App() {
       : null,
     () => api.getLatestDecisions(selectedTraderId, decisionsLimit),
     {
-      refreshInterval: 30000, // 30秒刷新（决策更新频率较低）
+      refreshInterval: 60000, // 60秒刷新（决策更新频率较低）
       revalidateOnFocus: false,
-      dedupingInterval: 20000,
+      dedupingInterval: 30000,
     }
   )
 
@@ -287,9 +287,9 @@ function App() {
       : null,
     () => api.getStatistics(selectedTraderId),
     {
-      refreshInterval: 30000, // 30秒刷新（统计数据更新频率较低）
+      refreshInterval: 60000, // 60秒刷新（统计数据更新频率较低）
       revalidateOnFocus: false,
-      dedupingInterval: 20000,
+      dedupingInterval: 30000,
     }
   )
 

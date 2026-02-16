@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { useAuth } from '../contexts/AuthContext'
 import { useLanguage } from '../contexts/LanguageContext'
 import {
@@ -45,6 +46,7 @@ const API_BASE = import.meta.env.VITE_API_BASE || ''
 export function StrategyStudioPage() {
   const { token } = useAuth()
   const { language } = useLanguage()
+  const navigate = useNavigate()
 
   const [strategies, setStrategies] = useState<Strategy[]>([])
   const [selectedStrategy, setSelectedStrategy] = useState<Strategy | null>(null)
@@ -742,6 +744,13 @@ export function StrategyStudioPage() {
                   <div className="flex items-center justify-between">
                     <span className="text-sm truncate text-nofx-text">{strategy.name}</span>
                     <div className="flex items-center gap-0.5 opacity-0 group-hover:opacity-100 transition-opacity">
+                      <button
+                        onClick={(e) => { e.stopPropagation(); navigate(`/backtest?strategy=${strategy.id}`) }}
+                        className="p-1 rounded hover:bg-nofx-success/20 text-nofx-success"
+                        title={language === 'zh' ? '使用此策略回测' : 'Backtest with this strategy'}
+                      >
+                        <Play className="w-3 h-3" />
+                      </button>
                       <button
                         onClick={(e) => { e.stopPropagation(); handleExportStrategy(strategy) }}
                         className="p-1 rounded hover:bg-white/10 text-nofx-text-muted hover:text-white"

@@ -123,6 +123,8 @@ type BacktestRun struct {
 	OverridePrompt  bool      `gorm:"column:override_prompt;default:false"`
 	AIProvider      string    `gorm:"column:ai_provider;default:''"`
 	AIModel         string    `gorm:"column:ai_model;default:''"`
+	StrategyID      string    `gorm:"column:strategy_id;default:''"`   // Strategy ID from Strategy Studio
+	StrategyName    string    `gorm:"column:strategy_name;default:''"` // Strategy name for display
 	LastError       string    `gorm:"column:last_error;default:''"`
 	CreatedAt       time.Time `gorm:"column:created_at;autoCreateTime"`
 	UpdatedAt       time.Time `gorm:"column:updated_at;autoUpdateTime"`
@@ -545,7 +547,7 @@ func (s *BacktestStore) DeleteRun(runID string) error {
 }
 
 // SaveConfig saves config
-func (s *BacktestStore) SaveConfig(runID, userID, template, customPrompt, provider, model string, override bool, configJSON []byte) error {
+func (s *BacktestStore) SaveConfig(runID, userID, template, customPrompt, provider, model, strategyID, strategyName string, override bool, configJSON []byte) error {
 	if userID == "" {
 		userID = "default"
 	}
@@ -559,6 +561,8 @@ func (s *BacktestStore) SaveConfig(runID, userID, template, customPrompt, provid
 		OverridePrompt: override,
 		AIProvider:     provider,
 		AIModel:        model,
+		StrategyID:     strategyID,
+		StrategyName:   strategyName,
 	}
 	return s.db.Save(&run).Error
 }

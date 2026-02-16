@@ -689,3 +689,84 @@ func (t *LighterTraderV2) GetTrades(startTime time.Time, limit int) ([]tradertyp
 
 	return result, nil
 }
+
+// GetAccountSnapshot gets atomic account snapshot (balance + positions at same moment)
+// Falls back to separate GetBalance() + GetPositions() calls
+func (t *LighterTraderV2) GetAccountSnapshot() (*tradertypes.AccountSnapshot, error) {
+	startTime := time.Now()
+
+	// Get balance
+	balance, err := t.GetBalance()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get balance for snapshot: %w", err)
+	}
+
+	// Get positions immediately after
+	positions, err := t.GetPositions()
+	if err != nil {
+		return nil, fmt.Errorf("failed to get positions for snapshot: %w", err)
+	}
+
+	// Build snapshot
+	snapshot := &tradertypes.AccountSnapshot{
+		Timestamp:     time.Now(),
+		CacheHit:      false,
+		FetchDuration: time.Since(startTime),
+	}
+
+	// Parse balance fields
+	if wallet, ok := balance["totalWalletBalance"].(float64); ok {
+		snapshot.WalletBalance = wallet
+	}
+	if avail, ok := balance["availableBalance"].(float64); ok {
+		snapshot.AvailableBalance = avail
+	}
+	if unrealized, ok := balance["totalUnrealizedProfit"].(float64); ok {
+		snapshot.UnrealizedPnL = unrealized
+	}
+	if equity, ok := balance["totalEquity"].(float64); ok {
+		snapshot.TotalEquity = equity
+	} else {
+		snapshot.TotalEquity = snapshot.WalletBalance + snapshot.UnrealizedPnL
+	}
+
+	// Parse positions
+	for _, pos := range positions {
+		symbol, _ := pos["symbol"].(string)
+		side, _ := pos["side"].(string)
+		quantity, _ := pos["positionAmt"].(float64)
+		if quantity < 0 {
+			quantity = -quantity
+		}
+		if quantity == 0 {
+			continue
+		}
+
+		entryPrice, _ := pos["entryPrice"].(float64)
+		markPrice, _ := pos["markPrice"].(float64)
+		unrealizedPnL, _ := pos["unRealizedProfit"].(float64)
+		leverage := 10
+		if lev, ok := pos["leverage"].(float64); ok {
+			leverage = int(lev)
+		}
+		liquidationPrice, _ := pos["liquidationPrice"].(float64)
+
+		snapshot.Positions = append(snapshot.Positions, tradertypes.PositionSnapshot{
+			Symbol:           symbol,
+			Side:             strings.ToUpper(side),
+			Quantity:         quantity,
+			EntryPrice:       entryPrice,
+			MarkPrice:        markPrice,
+			UnrealizedPnL:    unrealizedPnL,
+			Leverage:         leverage,
+			LiquidationPrice: liquidationPrice,
+		})
+	}
+
+	return snapshot, nil
+}
+
+// InvalidateCache invalidates all cached data (no-op for Lighter as it doesn't use caching)
+func (t *LighterTraderV2) InvalidateCache() {
+	// Lighter trader doesn't use caching, so this is a no-op
+}

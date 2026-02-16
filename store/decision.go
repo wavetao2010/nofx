@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"time"
+	"unicode/utf8"
 
 	"gorm.io/gorm"
 )
@@ -294,6 +295,73 @@ func (s *DecisionStore) GetAllStatistics() (*Statistics, error) {
 	s.db.Raw("SELECT COUNT(*) FROM trader_positions WHERE status = 'CLOSED'").Scan(&stats.TotalClosePositions)
 
 	return stats, nil
+}
+
+// DecisionSummary lightweight decision summary for AI experience context
+type DecisionSummary struct {
+	Timestamp time.Time
+	Actions   []DecisionActionSummary
+	Success   bool
+}
+
+// DecisionActionSummary condensed action info for AI experience context
+type DecisionActionSummary struct {
+	Action     string
+	Symbol     string
+	Confidence int
+	Reasoning  string // truncated to ~80 chars
+	Success    bool
+}
+
+// GetRecentDecisionSummaries gets lightweight decision summaries (no prompts/traces)
+func (s *DecisionStore) GetRecentDecisionSummaries(traderID string, limit int) ([]DecisionSummary, error) {
+	var results []struct {
+		Timestamp time.Time
+		Decisions string
+		Success   bool
+	}
+
+	err := s.db.Model(&DecisionRecordDB{}).
+		Select("timestamp, decisions, success").
+		Where("trader_id = ?", traderID).
+		Order("timestamp DESC").
+		Limit(limit).
+		Find(&results).Error
+	if err != nil {
+		return nil, fmt.Errorf("failed to query decision summaries: %w", err)
+	}
+
+	summaries := make([]DecisionSummary, 0, len(results))
+	// Reverse to chronological order (oldest first)
+	for i := len(results) - 1; i >= 0; i-- {
+		r := results[i]
+		summary := DecisionSummary{
+			Timestamp: r.Timestamp,
+			Success:   r.Success,
+		}
+
+		var actions []DecisionAction
+		if err := json.Unmarshal([]byte(r.Decisions), &actions); err != nil {
+			continue // skip corrupt records
+		}
+		for _, a := range actions {
+			reasoning := a.Reasoning
+			if utf8.RuneCountInString(reasoning) > 80 {
+				runes := []rune(reasoning)
+				reasoning = string(runes[:77]) + "..."
+			}
+			summary.Actions = append(summary.Actions, DecisionActionSummary{
+				Action:     a.Action,
+				Symbol:     a.Symbol,
+				Confidence: a.Confidence,
+				Reasoning:  reasoning,
+				Success:    a.Success,
+			})
+		}
+		summaries = append(summaries, summary)
+	}
+
+	return summaries, nil
 }
 
 // GetLastCycleNumber gets the last cycle number for specified trader
