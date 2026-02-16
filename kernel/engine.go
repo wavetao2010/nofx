@@ -51,6 +51,7 @@ type PositionInfo struct {
 	LiquidationPrice float64 `json:"liquidation_price"`
 	MarginUsed       float64 `json:"margin_used"`
 	UpdateTime       int64   `json:"update_time"` // Position update timestamp (milliseconds)
+	OpenTime         int64   `json:"open_time"`   // Position open timestamp (milliseconds)
 }
 
 // AccountInfo account information
@@ -1607,7 +1608,25 @@ func (e *StrategyEngine) formatPositionInfo(index int, pos PositionInfo, ctx *Co
 	var sb strings.Builder
 
 	holdingDuration := ""
-	if pos.UpdateTime > 0 {
+	if pos.OpenTime > 0 {
+		// Use context current time for accurate duration (works for both live and backtest)
+		var nowMs int64
+		if parsed, err := time.Parse("2006-01-02 15:04:05 UTC", ctx.CurrentTime); err == nil {
+			nowMs = parsed.UnixMilli()
+		} else {
+			nowMs = time.Now().UnixMilli()
+		}
+		durationMs := nowMs - pos.OpenTime
+		durationMin := durationMs / (1000 * 60)
+		if durationMin < 60 {
+			holdingDuration = fmt.Sprintf(" | Holding Duration %d min", durationMin)
+		} else {
+			durationHour := durationMin / 60
+			durationMinRemainder := durationMin % 60
+			holdingDuration = fmt.Sprintf(" | Holding Duration %dh %dm", durationHour, durationMinRemainder)
+		}
+	} else if pos.UpdateTime > 0 {
+		// Fallback for live trading where OpenTime may not be set
 		durationMs := time.Now().UnixMilli() - pos.UpdateTime
 		durationMin := durationMs / (1000 * 60)
 		if durationMin < 60 {

@@ -676,6 +676,8 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 		actionRecord.Quantity = qty
 		actionRecord.Price = execPrice
 		actionRecord.Leverage = pos.Leverage
+		actionRecord.StopLoss = pos.StopLoss
+		actionRecord.TakeProfit = pos.TakeProfit
 		trade := TradeEvent{
 			Timestamp:     ts,
 			Symbol:        symbol,
@@ -707,6 +709,8 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 		actionRecord.Quantity = qty
 		actionRecord.Price = execPrice
 		actionRecord.Leverage = pos.Leverage
+		actionRecord.StopLoss = pos.StopLoss
+		actionRecord.TakeProfit = pos.TakeProfit
 		trade := TradeEvent{
 			Timestamp:     ts,
 			Symbol:        symbol,
@@ -933,6 +937,7 @@ func (r *Runner) convertPositions(priceMap map[string]float64) []kernel.Position
 			LiquidationPrice: pos.LiquidationPrice,
 			MarginUsed:       pos.Margin,
 			UpdateTime:       time.Now().UnixMilli(),
+			OpenTime:         pos.OpenTime,
 		})
 	}
 	return list
