@@ -371,6 +371,7 @@ func GetFullDecisionWithStrategy(ctx *Context, mcpClient mcp.AIClient, engine *S
 		riskConfig.AltcoinMaxLeverage,
 		riskConfig.BTCETHMaxPositionValueRatio,
 		riskConfig.AltcoinMaxPositionValueRatio,
+		riskConfig.MinConfidence,
 	)
 
 	if decision != nil {
@@ -1115,10 +1116,10 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 	sb.WriteString("</decision>\n\n")
 	sb.WriteString("## Field Description\n\n")
 	sb.WriteString("- `action`: open_long | open_short | close_long | close_short | hold | wait\n")
-	sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening recommended ≥ %d)\n", riskControl.MinConfidence))
-	sb.WriteString("- Required when opening: leverage, position_size_usd, stop_loss, take_profit, confidence, risk_usd\n")
-	sb.WriteString("- `stop_loss`: **Required** for new positions. Formula: base SL distance = 3% × leverage (capped at 30%). Long: entry × (1 - distance), Short: entry × (1 + distance). Adjust based on support/resistance\n")
-	sb.WriteString("- `take_profit`: **Required** for new positions. Formula: base TP distance = 9% × leverage (capped at 50%). Long: entry × (1 + distance), Short: entry × (1 - distance). Adjust based on resistance/support\n")
+	sb.WriteString(fmt.Sprintf("- `confidence`: 0-100 (opening requires ≥ %d, enforced by system)\n", riskControl.MinConfidence))
+	sb.WriteString("- Required when opening: leverage, position_size_usd, confidence, risk_usd\n")
+	sb.WriteString("- `stop_loss`: Optional (system auto-calculates based on ATR and leverage if omitted)\n")
+	sb.WriteString("- `take_profit`: Optional (system auto-calculates based on ATR and leverage if omitted)\n")
 	sb.WriteString("- **IMPORTANT**: All numeric values must be calculated numbers, NOT formulas/expressions (e.g., use `27.76` not `3000 * 0.01`)\n\n")
 
 	// 8. Custom Prompt
@@ -2116,7 +2117,7 @@ func formatFloatSlice(values []float64) string {
 // AI Response Parsing
 // ============================================================================
 
-func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) (*FullDecision, error) {
+func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, minConfidence int) (*FullDecision, error) {
 	cotTrace := extractCoTTrace(aiResponse)
 
 	decisions, err := extractDecisions(aiResponse)
@@ -2127,7 +2128,7 @@ func parseFullDecisionResponse(aiResponse string, accountEquity float64, btcEthL
 		}, fmt.Errorf("failed to extract decisions: %w", err)
 	}
 
-	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio); err != nil {
+	if err := validateDecisions(decisions, accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio, minConfidence); err != nil {
 		return &FullDecision{
 			CoTTrace:  cotTrace,
 			Decisions: decisions,
@@ -2293,16 +2294,16 @@ func compactArrayOpen(s string) string {
 // Decision Validation
 // ============================================================================
 
-func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
+func validateDecisions(decisions []Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, minConfidence int) error {
 	for i := range decisions {
-		if err := validateDecision(&decisions[i], accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio); err != nil {
+		if err := validateDecision(&decisions[i], accountEquity, btcEthLeverage, altcoinLeverage, btcEthPosRatio, altcoinPosRatio, minConfidence); err != nil {
 			return fmt.Errorf("decision #%d validation failed: %w", i+1, err)
 		}
 	}
 	return nil
 }
 
-func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64) error {
+func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoinLeverage int, btcEthPosRatio, altcoinPosRatio float64, minConfidence int) error {
 	validActions := map[string]bool{
 		"open_long":   true,
 		"open_short":  true,
@@ -2359,46 +2360,11 @@ func validateDecision(d *Decision, accountEquity float64, btcEthLeverage, altcoi
 				return fmt.Errorf("altcoin single coin position value cannot exceed %.0f USDT (%.1fx account equity), actual: %.0f", maxPositionValue, posRatio, d.PositionSizeUSD)
 			}
 		}
-		if d.StopLoss <= 0 || d.TakeProfit <= 0 {
-			return fmt.Errorf("stop loss and take profit must be greater than 0")
+		// Confidence threshold (hard enforced)
+		if d.Confidence < minConfidence {
+			return fmt.Errorf("confidence %d below minimum threshold %d", d.Confidence, minConfidence)
 		}
-
-		if d.Action == "open_long" {
-			if d.StopLoss >= d.TakeProfit {
-				return fmt.Errorf("for long positions, stop loss price must be less than take profit price")
-			}
-		} else {
-			if d.StopLoss <= d.TakeProfit {
-				return fmt.Errorf("for short positions, stop loss price must be greater than take profit price")
-			}
-		}
-
-		var entryPrice float64
-		if d.Action == "open_long" {
-			entryPrice = d.StopLoss + (d.TakeProfit-d.StopLoss)*0.2
-		} else {
-			entryPrice = d.StopLoss - (d.StopLoss-d.TakeProfit)*0.2
-		}
-
-		var riskPercent, rewardPercent, riskRewardRatio float64
-		if d.Action == "open_long" {
-			riskPercent = (entryPrice - d.StopLoss) / entryPrice * 100
-			rewardPercent = (d.TakeProfit - entryPrice) / entryPrice * 100
-			if riskPercent > 0 {
-				riskRewardRatio = rewardPercent / riskPercent
-			}
-		} else {
-			riskPercent = (d.StopLoss - entryPrice) / entryPrice * 100
-			rewardPercent = (entryPrice - d.TakeProfit) / entryPrice * 100
-			if riskPercent > 0 {
-				riskRewardRatio = rewardPercent / riskPercent
-			}
-		}
-
-		if riskRewardRatio < 3.0 {
-			return fmt.Errorf("risk/reward ratio too low (%.2f:1), must be ≥3.0:1 [risk: %.2f%% reward: %.2f%%] [stop loss: %.2f take profit: %.2f]",
-				riskRewardRatio, riskPercent, rewardPercent, d.StopLoss, d.TakeProfit)
-		}
+		// NOTE: SL/TP validation removed — system auto-calculates SL/TP based on ATR after AI decision
 	}
 
 	return nil

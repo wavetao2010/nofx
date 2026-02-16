@@ -61,6 +61,8 @@ type Runner struct {
 	aiCache   *AICache
 	cachePath string
 
+	lastSLTime map[string]int64 // symbol -> timestamp(ms) of last stop-loss trigger
+
 	lockInfo     *RunLockInfo
 	lockStop     chan struct{}
 	lockStopOnce sync.Once // Ensures lockStop is closed only once
@@ -138,6 +140,7 @@ func NewRunner(cfg BacktestConfig, mcpClient mcp.AIClient) (*Runner, error) {
 		createdAt:      createdAt,
 		aiCache:        aiCache,
 		cachePath:      cachePath,
+		lastSLTime:     make(map[string]int64),
 	}
 
 	if err := r.initLock(); err != nil {
@@ -374,7 +377,7 @@ func (r *Runner) stepOnce() error {
 			}
 
 			for _, dec := range sorted {
-				actionRecord, trades, logEntry, execErr := r.executeDecision(dec, priceMap, ts, callCount)
+				actionRecord, trades, logEntry, execErr := r.executeDecision(dec, priceMap, marketData, ts, callCount)
 				if execErr != nil {
 					actionRecord.Success = false
 					actionRecord.Error = execErr.Error()
@@ -630,7 +633,7 @@ func (r *Runner) invokeAIWithRetry(ctx *kernel.Context) (*kernel.FullDecision, e
 	return nil, lastErr
 }
 
-func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float64, ts int64, cycle int) (store.DecisionAction, []TradeEvent, string, error) {
+func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float64, marketData map[string]*market.Data, ts int64, cycle int) (store.DecisionAction, []TradeEvent, string, error) {
 	symbol := dec.Symbol
 	if symbol == "" {
 		return store.DecisionAction{}, nil, "", fmt.Errorf("empty symbol in decision")
@@ -661,8 +664,18 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 	}
 	fillPrice := r.executionPrice(symbol, basePrice, ts)
 
+	// Extract ATR14 for intelligent SL/TP calculation
+	var atr float64
+	if md, ok := marketData[symbol]; ok && md.IntradaySeries != nil {
+		atr = md.IntradaySeries.ATR14
+	}
+
 	switch dec.Action {
 	case "open_long":
+		// Cooldown check: prevent reopening same symbol too soon after stop-loss
+		if err := r.checkCooldown(symbol, ts); err != nil {
+			return actionRecord, nil, "", err
+		}
 		qty := r.determineQuantity(dec, basePrice)
 		if qty <= 0 {
 			return actionRecord, nil, "", fmt.Errorf("invalid qty")
@@ -671,8 +684,8 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 		if err != nil {
 			return actionRecord, nil, "", err
 		}
-		// Set SL/TP on position (with leverage-based fallback)
-		r.applyStopLossTakeProfit(pos, dec.StopLoss, dec.TakeProfit, execPrice)
+		// Set SL/TP on position (ATR-based, code-calculated)
+		r.applyStopLossTakeProfit(pos, execPrice, atr)
 		actionRecord.Quantity = qty
 		actionRecord.Price = execPrice
 		actionRecord.Leverage = pos.Leverage
@@ -696,6 +709,10 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 		return actionRecord, []TradeEvent{trade}, "", nil
 
 	case "open_short":
+		// Cooldown check: prevent reopening same symbol too soon after stop-loss
+		if err := r.checkCooldown(symbol, ts); err != nil {
+			return actionRecord, nil, "", err
+		}
 		qty := r.determineQuantity(dec, basePrice)
 		if qty <= 0 {
 			return actionRecord, nil, "", fmt.Errorf("invalid qty")
@@ -704,8 +721,8 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 		if err != nil {
 			return actionRecord, nil, "", err
 		}
-		// Set SL/TP on position (with leverage-based fallback)
-		r.applyStopLossTakeProfit(pos, dec.StopLoss, dec.TakeProfit, execPrice)
+		// Set SL/TP on position (ATR-based, code-calculated)
+		r.applyStopLossTakeProfit(pos, execPrice, atr)
 		actionRecord.Quantity = qty
 		actionRecord.Price = execPrice
 		actionRecord.Leverage = pos.Leverage
@@ -1127,36 +1144,67 @@ func (r *Runner) checkLiquidation(ts int64, priceMap map[string]float64, cycle i
 	return events, note, nil
 }
 
-// applyStopLossTakeProfit sets SL/TP on a position. If AI didn't provide values,
-// uses leverage-based fallback: SL = 3% × leverage (cap 30%), TP = 9% × leverage (cap 50%).
-func (r *Runner) applyStopLossTakeProfit(pos *position, aiSL, aiTP, execPrice float64) {
-	if pos.Side == "long" {
-		if aiSL > 0 {
-			pos.StopLoss = aiSL
-		} else {
-			slDist := math.Min(0.03*float64(pos.Leverage), 0.30)
-			pos.StopLoss = execPrice * (1 - slDist)
-		}
-		if aiTP > 0 {
-			pos.TakeProfit = aiTP
-		} else {
-			tpDist := math.Min(0.09*float64(pos.Leverage), 0.50)
-			pos.TakeProfit = execPrice * (1 + tpDist)
-		}
-	} else { // short
-		if aiSL > 0 {
-			pos.StopLoss = aiSL
-		} else {
-			slDist := math.Min(0.03*float64(pos.Leverage), 0.30)
-			pos.StopLoss = execPrice * (1 + slDist)
-		}
-		if aiTP > 0 {
-			pos.TakeProfit = aiTP
-		} else {
-			tpDist := math.Min(0.09*float64(pos.Leverage), 0.50)
-			pos.TakeProfit = execPrice * (1 - tpDist)
+// applyStopLossTakeProfit sets SL/TP on a position using ATR-based calculation.
+// Always uses code-calculated values (ignores AI-provided SL/TP).
+// SL distance = max(2×ATR14, 3%×leverage×price), capped at 30% of price.
+// TP distance = 3× SL distance (maintains 1:3 risk/reward ratio).
+func (r *Runner) applyStopLossTakeProfit(pos *position, execPrice float64, atr float64) {
+	// Percentage-based SL distance (fallback when ATR unavailable)
+	pctDist := math.Min(0.03*float64(pos.Leverage), 0.30)
+	slDist := execPrice * pctDist
+
+	// Use ATR if available and wider than percentage-based (avoids being shaken out by normal volatility)
+	if atr > 0 {
+		atrDist := 2.0 * atr
+		if atrDist > slDist {
+			slDist = atrDist
 		}
 	}
+
+	// Cap SL distance at 30% of entry price
+	maxDist := execPrice * 0.30
+	if slDist > maxDist {
+		slDist = maxDist
+	}
+
+	// TP distance = 3× SL distance (1:3 risk/reward)
+	tpDist := slDist * 3.0
+
+	if pos.Side == "long" {
+		pos.StopLoss = execPrice - slDist
+		pos.TakeProfit = execPrice + tpDist
+	} else { // short
+		pos.StopLoss = execPrice + slDist
+		pos.TakeProfit = execPrice - tpDist
+	}
+
+	logger.Infof("  🎯 SL/TP set for %s %s: SL=%.4f TP=%.4f (slDist=%.4f, atr=%.4f, entry=%.4f)",
+		pos.Symbol, pos.Side, pos.StopLoss, pos.TakeProfit, slDist, atr, execPrice)
+}
+
+// checkCooldown returns an error if the symbol is in a post-stop-loss cooldown period.
+// Cooldown = 6 decision intervals after the last stop-loss trigger on this symbol.
+func (r *Runner) checkCooldown(symbol string, ts int64) error {
+	lastSL, ok := r.lastSLTime[symbol]
+	if !ok {
+		return nil
+	}
+	cooldownMs := r.cooldownDurationMs()
+	if ts-lastSL < cooldownMs {
+		remaining := (cooldownMs - (ts - lastSL)) / 60000
+		return fmt.Errorf("cooldown active for %s: %dm remaining after stop-loss", symbol, remaining)
+	}
+	return nil
+}
+
+// cooldownDurationMs returns the cooldown period in milliseconds (6 decision intervals).
+func (r *Runner) cooldownDurationMs() int64 {
+	dur, err := market.TFDuration(r.cfg.DecisionTimeframe)
+	if err != nil {
+		dur = 5 * time.Minute // fallback
+	}
+	barMs := dur.Milliseconds()
+	return int64(6*r.cfg.DecisionCadenceNBars) * barMs
 }
 
 // checkStopLossTakeProfit checks all positions for SL/TP triggers and auto-closes them.
@@ -1209,6 +1257,11 @@ func (r *Runner) checkStopLossTakeProfit(ts int64, priceMap map[string]float64, 
 		}
 
 		noteBuilder.WriteString(fmt.Sprintf("%s %s %s @ %.4f; ", pos.Symbol, pos.Side, reason, finalPrice))
+
+		// Record stop-loss time for cooldown tracking
+		if reason == "stop_loss" {
+			r.lastSLTime[pos.Symbol] = ts
+		}
 
 		evt := TradeEvent{
 			Timestamp:     ts,
@@ -1549,6 +1602,7 @@ func (r *Runner) buildCheckpointFromState(state BacktestState) *Checkpoint {
 		MinEquity:       state.MinEquity,
 		MaxDrawdownPct:  state.MaxDrawdownPct,
 		AICacheRef:      r.cachePath,
+		LastSLTime:      r.lastSLTime,
 	}
 }
 
@@ -1601,6 +1655,10 @@ func (r *Runner) applyCheckpoint(ckpt *Checkpoint) error {
 	r.state.Positions = snapshotsToMap(ckpt.Positions)
 	r.state.LastUpdate = time.Now().UTC()
 	r.lastCheckpoint = time.Now()
+	// Restore cooldown state
+	if ckpt.LastSLTime != nil {
+		r.lastSLTime = ckpt.LastSLTime
+	}
 	return nil
 }
 

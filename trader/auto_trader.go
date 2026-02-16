@@ -1246,18 +1246,33 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	posKey := decision.Symbol + "_long"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Fallback SL/TP calculation if AI didn't provide values
-	// Formula: distance = base% × leverage, capped at max%
-	// SL: 3% base, 30% cap; TP: 9% base, 50% cap
-	if decision.StopLoss <= 0 {
-		slDistance := math.Min(0.03*float64(decision.Leverage), 0.30)
-		decision.StopLoss = marketData.CurrentPrice * (1 - slDistance)
-		logger.Infof("  ⚠ AI did not provide stop_loss, using fallback: %.4f (%.1f%% below entry)", decision.StopLoss, slDistance*100)
-	}
-	if decision.TakeProfit <= 0 {
-		tpDistance := math.Min(0.09*float64(decision.Leverage), 0.50)
-		decision.TakeProfit = marketData.CurrentPrice * (1 + tpDistance)
-		logger.Infof("  ⚠ AI did not provide take_profit, using fallback: %.4f (%.1f%% above entry)", decision.TakeProfit, tpDistance*100)
+	// ATR-based SL/TP calculation (always code-calculated, ignores AI values)
+	// SL distance = max(2×ATR14, 3%×leverage×price), capped at 30%
+	// TP distance = 3× SL distance (1:3 risk/reward)
+	{
+		pctDist := math.Min(0.03*float64(decision.Leverage), 0.30)
+		slDist := marketData.CurrentPrice * pctDist
+		if marketData.IntradaySeries != nil && marketData.IntradaySeries.ATR14 > 0 {
+			atrDist := 2.0 * marketData.IntradaySeries.ATR14
+			if atrDist > slDist {
+				slDist = atrDist
+			}
+		}
+		maxDist := marketData.CurrentPrice * 0.30
+		if slDist > maxDist {
+			slDist = maxDist
+		}
+		tpDist := slDist * 3.0
+		decision.StopLoss = marketData.CurrentPrice - slDist
+		decision.TakeProfit = marketData.CurrentPrice + tpDist
+		logger.Infof("  🎯 SL/TP set: SL=%.4f TP=%.4f (slDist=%.4f, ATR=%.4f)",
+			decision.StopLoss, decision.TakeProfit, slDist,
+			func() float64 {
+				if marketData.IntradaySeries != nil {
+					return marketData.IntradaySeries.ATR14
+				}
+				return 0
+			}())
 	}
 
 	// Set stop loss and take profit
@@ -1380,17 +1395,32 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	posKey := decision.Symbol + "_short"
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
-	// Fallback SL/TP calculation if AI didn't provide values
+	// ATR-based SL/TP calculation (always code-calculated, ignores AI values)
 	// For short: SL above entry, TP below entry
-	if decision.StopLoss <= 0 {
-		slDistance := math.Min(0.03*float64(decision.Leverage), 0.30)
-		decision.StopLoss = marketData.CurrentPrice * (1 + slDistance)
-		logger.Infof("  ⚠ AI did not provide stop_loss, using fallback: %.4f (%.1f%% above entry)", decision.StopLoss, slDistance*100)
-	}
-	if decision.TakeProfit <= 0 {
-		tpDistance := math.Min(0.09*float64(decision.Leverage), 0.50)
-		decision.TakeProfit = marketData.CurrentPrice * (1 - tpDistance)
-		logger.Infof("  ⚠ AI did not provide take_profit, using fallback: %.4f (%.1f%% below entry)", decision.TakeProfit, tpDistance*100)
+	{
+		pctDist := math.Min(0.03*float64(decision.Leverage), 0.30)
+		slDist := marketData.CurrentPrice * pctDist
+		if marketData.IntradaySeries != nil && marketData.IntradaySeries.ATR14 > 0 {
+			atrDist := 2.0 * marketData.IntradaySeries.ATR14
+			if atrDist > slDist {
+				slDist = atrDist
+			}
+		}
+		maxDist := marketData.CurrentPrice * 0.30
+		if slDist > maxDist {
+			slDist = maxDist
+		}
+		tpDist := slDist * 3.0
+		decision.StopLoss = marketData.CurrentPrice + slDist
+		decision.TakeProfit = marketData.CurrentPrice - tpDist
+		logger.Infof("  🎯 SL/TP set: SL=%.4f TP=%.4f (slDist=%.4f, ATR=%.4f)",
+			decision.StopLoss, decision.TakeProfit, slDist,
+			func() float64 {
+				if marketData.IntradaySeries != nil {
+					return marketData.IntradaySeries.ATR14
+				}
+				return 0
+			}())
 	}
 
 	// Set stop loss and take profit

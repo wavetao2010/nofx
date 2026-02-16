@@ -110,8 +110,8 @@ func (pb *PromptBuilder) buildSystemPromptZH() string {
   - WAIT: 等待，不采取任何行动
 - **leverage**: 杠杆倍数（开新仓时必需）
 - **position_size_usd**: 仓位大小（USDT，开新仓时必需）
-- **stop_loss**: 止损价格（开新仓时**必须提供**）。计算参考：基础止损距离=3%×杠杆倍数（上限30%），即 stop_loss = entry_price × (1 ∓ min(0.03×leverage, 0.30))。做多时减，做空时加。可根据支撑/阻力位微调
-- **take_profit**: 止盈价格（开新仓时**必须提供**）。计算参考：基础止盈距离=9%×杠杆倍数（上限50%），即 take_profit = entry_price × (1 ± min(0.09×leverage, 0.50))。做多时加，做空时减。可根据阻力/支撑位微调
+- **stop_loss**: 止损价格（可选，系统会基于ATR和杠杆自动设置）
+- **take_profit**: 止盈价格（可选，系统会基于ATR和杠杆自动设置）
 - **confidence**: 信心度（0-100）
 - **reasoning**: 推理过程（必需，必须详细说明决策依据）
 
@@ -249,8 +249,8 @@ func (pb *PromptBuilder) buildSystemPromptEN() string {
   - WAIT: Wait, take no action
 - **leverage**: Leverage multiplier (required for new positions)
 - **position_size_usd**: Position size in USDT (required for new positions)
-- **stop_loss**: Stop-loss price (**required** for new positions). Formula: base SL distance = 3% × leverage (capped at 30%), i.e. stop_loss = entry_price × (1 ∓ min(0.03×leverage, 0.30)). Subtract for long, add for short. Adjust based on support/resistance levels
-- **take_profit**: Take-profit price (**required** for new positions). Formula: base TP distance = 9% × leverage (capped at 50%), i.e. take_profit = entry_price × (1 ± min(0.09×leverage, 0.50)). Add for long, subtract for short. Adjust based on resistance/support levels
+- **stop_loss**: Stop-loss price (optional, system auto-calculates based on ATR and leverage)
+- **take_profit**: Take-profit price (optional, system auto-calculates based on ATR and leverage)
 - **confidence**: Confidence level (0-100)
 - **reasoning**: Detailed reasoning (required, must explain decision basis)
 

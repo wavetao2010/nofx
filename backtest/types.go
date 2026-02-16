@@ -47,6 +47,7 @@ type BacktestState struct {
 	LastUpdate      time.Time
 	Liquidated      bool
 	LiquidationNote string
+	LastSLTime      map[string]int64 // symbol -> timestamp(ms) of last stop-loss trigger (cooldown tracking)
 }
 
 // EquityPoint represents a single point on the equity curve.
@@ -123,6 +124,7 @@ type Checkpoint struct {
 	AICacheRef      string                    `json:"ai_cache_ref,omitempty"`
 	Liquidated      bool                      `json:"liquidated"`
 	LiquidationNote string                    `json:"liquidation_note,omitempty"`
+	LastSLTime      map[string]int64          `json:"last_sl_time,omitempty"` // symbol -> timestamp(ms) of last stop-loss
 }
 
 // RunMetadata records the summary required for run.json.
