@@ -988,7 +988,12 @@ func (e *StrategyEngine) BuildSystemPrompt(accountEquity float64, variant string
 
 	// 0. Data Dictionary & Schema (ensure AI understands all fields)
 	lang := e.GetLanguage()
-	schemaPrompt := GetSchemaPrompt(lang)
+	var schemaPrompt string
+	if e.config.Indicators.CompactPrompt {
+		schemaPrompt = GetSchemaPromptCompact(lang)
+	} else {
+		schemaPrompt = GetSchemaPrompt(lang)
+	}
 	sb.WriteString(schemaPrompt)
 	sb.WriteString("\n\n")
 	sb.WriteString("---\n\n")
@@ -1560,17 +1565,29 @@ func (e *StrategyEngine) BuildUserPrompt(ctx *Context) string {
 
 	// OI Ranking data (market-wide open interest changes)
 	if ctx.OIRankingData != nil {
-		sb.WriteString(nofxos.FormatOIRankingForAI(ctx.OIRankingData, nofxosLang))
+		if e.config.Indicators.CompactPrompt {
+			sb.WriteString(nofxos.FormatOIRankingForAICompact(ctx.OIRankingData, nofxosLang))
+		} else {
+			sb.WriteString(nofxos.FormatOIRankingForAI(ctx.OIRankingData, nofxosLang))
+		}
 	}
 
 	// NetFlow Ranking data (market-wide fund flow)
 	if ctx.NetFlowRankingData != nil {
-		sb.WriteString(nofxos.FormatNetFlowRankingForAI(ctx.NetFlowRankingData, nofxosLang))
+		if e.config.Indicators.CompactPrompt {
+			sb.WriteString(nofxos.FormatNetFlowRankingForAICompact(ctx.NetFlowRankingData, nofxosLang))
+		} else {
+			sb.WriteString(nofxos.FormatNetFlowRankingForAI(ctx.NetFlowRankingData, nofxosLang))
+		}
 	}
 
 	// Price Ranking data (market-wide gainers/losers)
 	if ctx.PriceRankingData != nil {
-		sb.WriteString(nofxos.FormatPriceRankingForAI(ctx.PriceRankingData, nofxosLang))
+		if e.config.Indicators.CompactPrompt {
+			sb.WriteString(nofxos.FormatPriceRankingForAICompact(ctx.PriceRankingData, nofxosLang))
+		} else {
+			sb.WriteString(nofxos.FormatPriceRankingForAI(ctx.PriceRankingData, nofxosLang))
+		}
 	}
 
 	sb.WriteString("---\n\n")
@@ -1794,6 +1811,17 @@ func (e *StrategyEngine) FormatMarketDataForTest(data *market.Data) string {
 }
 
 func (e *StrategyEngine) formatTimeframeSeriesData(sb *strings.Builder, data *market.TimeframeSeriesData, indicators store.IndicatorConfig) {
+	// Compact mode: 2-3 lines per timeframe instead of ~12
+	if indicators.CompactPrompt {
+		currentPrice := 0.0
+		if len(data.Klines) > 0 {
+			currentPrice = data.Klines[len(data.Klines)-1].Close
+		}
+		sb.WriteString(FormatIndicatorsCompact(data, indicators, currentPrice))
+		sb.WriteString("\n")
+		return
+	}
+
 	// K 线表格已移除 - 技术指标已包含所有关键信息
 	// 保留当前价格将在 formatMarketData() 中单独输出
 
@@ -1888,6 +1916,11 @@ func (e *StrategyEngine) formatQuantData(data *QuantData) string {
 		return ""
 	}
 
+	// Compact mode: 3-4 lines instead of ~30
+	if indicators.CompactPrompt {
+		return fmt.Sprintf("📊 %s Quant: ", data.Symbol) + formatQuantDataCompact(data, indicators)
+	}
+
 	var sb strings.Builder
 	sb.WriteString(fmt.Sprintf("📊 %s Quantitative Data:\n", data.Symbol))
 
@@ -1980,6 +2013,69 @@ func formatFlowValue(v float64) string {
 		return fmt.Sprintf("%s%.2fK", sign, v/1e3)
 	}
 	return fmt.Sprintf("%s%.2f", sign, v)
+}
+
+// formatQuantDataCompact formats quant data in 3-4 compact lines.
+// Only keeps 1h/4h/24h timeframes, only institution futures netflow.
+//
+// Example output:
+//
+//	Price: 1h:+0.89% 4h:+2.1% 24h:+5.2%
+//	Inst.Fut: 1h:+10.5M 4h:+25.3M 24h:+50.1M
+//	OI(binance): 1h:+0.89%(+8.9M) 4h:+2.1%(+21M)
+func formatQuantDataCompact(data *QuantData, indicators store.IndicatorConfig) string {
+	if data == nil {
+		return ""
+	}
+
+	keyTimeframes := []string{"1h", "4h", "24h"}
+	var sb strings.Builder
+
+	// Price changes (1 line)
+	if len(data.PriceChange) > 0 {
+		sb.WriteString("Price: ")
+		var parts []string
+		for _, tf := range keyTimeframes {
+			if v, ok := data.PriceChange[tf]; ok {
+				parts = append(parts, fmt.Sprintf("%s:%+.2f%%", tf, v*100))
+			}
+		}
+		sb.WriteString(strings.Join(parts, " "))
+		sb.WriteString("\n")
+	}
+
+	// Institutional futures flow only (1 line, most important signal)
+	if indicators.EnableQuantNetflow && data.Netflow != nil &&
+		data.Netflow.Institution != nil && len(data.Netflow.Institution.Future) > 0 {
+		sb.WriteString("Inst.Fut: ")
+		var parts []string
+		for _, tf := range keyTimeframes {
+			if v, ok := data.Netflow.Institution.Future[tf]; ok {
+				parts = append(parts, fmt.Sprintf("%s:%s", tf, formatFlowValue(v)))
+			}
+		}
+		sb.WriteString(strings.Join(parts, " "))
+		sb.WriteString("\n")
+	}
+
+	// OI changes (1 line per exchange)
+	if indicators.EnableQuantOI && len(data.OI) > 0 {
+		for exchange, oiData := range data.OI {
+			if len(oiData.Delta) > 0 {
+				sb.WriteString(fmt.Sprintf("OI(%s): ", exchange))
+				var parts []string
+				for _, tf := range keyTimeframes {
+					if d, ok := oiData.Delta[tf]; ok {
+						parts = append(parts, fmt.Sprintf("%s:%+.2f%%(%s)", tf, d.OIDeltaPercent, formatFlowValue(d.OIDeltaValue)))
+					}
+				}
+				sb.WriteString(strings.Join(parts, " "))
+				sb.WriteString("\n")
+			}
+		}
+	}
+
+	return sb.String()
 }
 
 func formatFloatSlice(values []float64) string {

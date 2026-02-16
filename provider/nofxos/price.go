@@ -180,3 +180,103 @@ func formatPriceRankingEN(data *PriceRankingData) string {
 	sb.WriteString("**Key**: Big gain + Fund inflow + OI increase = Strong bullish | Big loss + Fund outflow + OI decrease = Strong bearish\n\n")
 	return sb.String()
 }
+
+// FormatPriceRankingForAICompact formats Price ranking in compact format.
+// Each duration becomes one line with top 5 gainers and losers.
+func FormatPriceRankingForAICompact(data *PriceRankingData, lang Language) string {
+	if data == nil || len(data.Durations) == 0 {
+		return ""
+	}
+	if lang == LangChinese {
+		return formatPriceRankingCompactZH(data)
+	}
+	return formatPriceRankingCompactEN(data)
+}
+
+func formatPriceRankingCompactZH(data *PriceRankingData) string {
+	var sb strings.Builder
+	sb.WriteString("## 涨跌幅\n\n")
+
+	for _, duration := range []string{"1h", "4h", "24h"} {
+		durationData, exists := data.Durations[duration]
+		if !exists || durationData == nil {
+			continue
+		}
+
+		if len(durationData.Top) > 0 {
+			sb.WriteString(fmt.Sprintf("**%s涨**: ", duration))
+			limit := 5
+			if len(durationData.Top) < limit {
+				limit = len(durationData.Top)
+			}
+			var parts []string
+			for i := 0; i < limit; i++ {
+				item := durationData.Top[i]
+				parts = append(parts, fmt.Sprintf("%s(%+.1f%%)", item.Symbol, item.PriceDelta*100))
+			}
+			sb.WriteString(strings.Join(parts, ", "))
+		}
+
+		if len(durationData.Low) > 0 {
+			sb.WriteString(" | **跌**: ")
+			limit := 5
+			if len(durationData.Low) < limit {
+				limit = len(durationData.Low)
+			}
+			var parts []string
+			for i := 0; i < limit; i++ {
+				item := durationData.Low[i]
+				parts = append(parts, fmt.Sprintf("%s(%.1f%%)", item.Symbol, item.PriceDelta*100))
+			}
+			sb.WriteString(strings.Join(parts, ", "))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func formatPriceRankingCompactEN(data *PriceRankingData) string {
+	var sb strings.Builder
+	sb.WriteString("## Price Movers\n\n")
+
+	for _, duration := range []string{"1h", "4h", "24h"} {
+		durationData, exists := data.Durations[duration]
+		if !exists || durationData == nil {
+			continue
+		}
+
+		if len(durationData.Top) > 0 {
+			sb.WriteString(fmt.Sprintf("**%s Gainers**: ", duration))
+			limit := 5
+			if len(durationData.Top) < limit {
+				limit = len(durationData.Top)
+			}
+			var parts []string
+			for i := 0; i < limit; i++ {
+				item := durationData.Top[i]
+				parts = append(parts, fmt.Sprintf("%s(%+.1f%%)", item.Symbol, item.PriceDelta*100))
+			}
+			sb.WriteString(strings.Join(parts, ", "))
+		}
+
+		if len(durationData.Low) > 0 {
+			sb.WriteString(" | **Losers**: ")
+			limit := 5
+			if len(durationData.Low) < limit {
+				limit = len(durationData.Low)
+			}
+			var parts []string
+			for i := 0; i < limit; i++ {
+				item := durationData.Low[i]
+				parts = append(parts, fmt.Sprintf("%s(%.1f%%)", item.Symbol, item.PriceDelta*100))
+			}
+			sb.WriteString(strings.Join(parts, ", "))
+		}
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}

@@ -261,3 +261,91 @@ func formatNetFlowRankingEN(data *NetFlowRankingData) string {
 	sb.WriteString("**Key**: Institution buy + Retail sell = Strong bullish | Institution sell + Retail buy = Strong bearish\n\n")
 	return sb.String()
 }
+
+// FormatNetFlowRankingForAICompact formats NetFlow ranking in compact comma-separated format.
+// Only keeps institution futures (most important signal), top 5 each.
+func FormatNetFlowRankingForAICompact(data *NetFlowRankingData, lang Language) string {
+	if data == nil {
+		return ""
+	}
+	if lang == LangChinese {
+		return formatNetFlowRankingCompactZH(data)
+	}
+	return formatNetFlowRankingCompactEN(data)
+}
+
+func formatNetFlowRankingCompactZH(data *NetFlowRankingData) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## 资金流向 (%s)\n\n", data.Duration))
+
+	if len(data.InstitutionFutureTop) > 0 {
+		sb.WriteString("**机构买入**: ")
+		limit := 5
+		if len(data.InstitutionFutureTop) < limit {
+			limit = len(data.InstitutionFutureTop)
+		}
+		var parts []string
+		for i := 0; i < limit; i++ {
+			pos := data.InstitutionFutureTop[i]
+			parts = append(parts, fmt.Sprintf("%s(%s)", pos.Symbol, formatValue(pos.Amount)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	if len(data.InstitutionFutureLow) > 0 {
+		sb.WriteString("**机构卖出**: ")
+		limit := 5
+		if len(data.InstitutionFutureLow) < limit {
+			limit = len(data.InstitutionFutureLow)
+		}
+		var parts []string
+		for i := 0; i < limit; i++ {
+			pos := data.InstitutionFutureLow[i]
+			parts = append(parts, fmt.Sprintf("%s(%s)", pos.Symbol, formatValue(pos.Amount)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func formatNetFlowRankingCompactEN(data *NetFlowRankingData) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## Fund Flow (%s)\n\n", data.Duration))
+
+	if len(data.InstitutionFutureTop) > 0 {
+		sb.WriteString("**Inst. Inflow**: ")
+		limit := 5
+		if len(data.InstitutionFutureTop) < limit {
+			limit = len(data.InstitutionFutureTop)
+		}
+		var parts []string
+		for i := 0; i < limit; i++ {
+			pos := data.InstitutionFutureTop[i]
+			parts = append(parts, fmt.Sprintf("%s(%s)", pos.Symbol, formatValue(pos.Amount)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	if len(data.InstitutionFutureLow) > 0 {
+		sb.WriteString("**Inst. Outflow**: ")
+		limit := 5
+		if len(data.InstitutionFutureLow) < limit {
+			limit = len(data.InstitutionFutureLow)
+		}
+		var parts []string
+		for i := 0; i < limit; i++ {
+			pos := data.InstitutionFutureLow[i]
+			parts = append(parts, fmt.Sprintf("%s(%s)", pos.Symbol, formatValue(pos.Amount)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}

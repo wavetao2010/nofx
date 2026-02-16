@@ -235,3 +235,91 @@ func formatOIRankingEN(data *OIRankingData) string {
 	sb.WriteString("**Key**: OI up + Price up = Bulls dominant | OI up + Price down = Bears dominant | OI down + Price up = Short covering | OI down + Price down = Long liquidation\n\n")
 	return sb.String()
 }
+
+// FormatOIRankingForAICompact formats OI ranking data in compact comma-separated format.
+// Reduces from ~40 lines (markdown tables) to 2 lines.
+func FormatOIRankingForAICompact(data *OIRankingData, lang Language) string {
+	if data == nil {
+		return ""
+	}
+	if lang == LangChinese {
+		return formatOIRankingCompactZH(data)
+	}
+	return formatOIRankingCompactEN(data)
+}
+
+func formatOIRankingCompactZH(data *OIRankingData) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## OI变化 (%s)\n\n", data.Duration))
+
+	if len(data.TopPositions) > 0 {
+		sb.WriteString("**OI增加**: ")
+		limit := 10
+		if len(data.TopPositions) < limit {
+			limit = len(data.TopPositions)
+		}
+		var parts []string
+		for i := 0; i < limit; i++ {
+			pos := data.TopPositions[i]
+			parts = append(parts, fmt.Sprintf("%s(%+.1f%%,%s)", pos.Symbol, pos.OIDeltaPercent, formatValue(pos.OIDeltaValue)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	if len(data.LowPositions) > 0 {
+		sb.WriteString("**OI减少**: ")
+		limit := 10
+		if len(data.LowPositions) < limit {
+			limit = len(data.LowPositions)
+		}
+		var parts []string
+		for i := 0; i < limit; i++ {
+			pos := data.LowPositions[i]
+			parts = append(parts, fmt.Sprintf("%s(%.1f%%,%s)", pos.Symbol, pos.OIDeltaPercent, formatValue(pos.OIDeltaValue)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}
+
+func formatOIRankingCompactEN(data *OIRankingData) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("## OI Changes (%s)\n\n", data.Duration))
+
+	if len(data.TopPositions) > 0 {
+		sb.WriteString("**OI Increase**: ")
+		limit := 10
+		if len(data.TopPositions) < limit {
+			limit = len(data.TopPositions)
+		}
+		var parts []string
+		for i := 0; i < limit; i++ {
+			pos := data.TopPositions[i]
+			parts = append(parts, fmt.Sprintf("%s(%+.1f%%,%s)", pos.Symbol, pos.OIDeltaPercent, formatValue(pos.OIDeltaValue)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	if len(data.LowPositions) > 0 {
+		sb.WriteString("**OI Decrease**: ")
+		limit := 10
+		if len(data.LowPositions) < limit {
+			limit = len(data.LowPositions)
+		}
+		var parts []string
+		for i := 0; i < limit; i++ {
+			pos := data.LowPositions[i]
+			parts = append(parts, fmt.Sprintf("%s(%.1f%%,%s)", pos.Symbol, pos.OIDeltaPercent, formatValue(pos.OIDeltaValue)))
+		}
+		sb.WriteString(strings.Join(parts, ", "))
+		sb.WriteString("\n")
+	}
+
+	sb.WriteString("\n")
+	return sb.String()
+}

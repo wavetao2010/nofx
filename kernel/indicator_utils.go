@@ -2,6 +2,8 @@ package kernel
 
 import (
 	"fmt"
+	"nofx/market"
+	"nofx/store"
 	"strings"
 )
 
@@ -130,4 +132,69 @@ func CalculateBBPosition(price float64, upper, middle, lower float64) string {
 		return "upper_half"
 	}
 	return "lower_half"
+}
+
+// FormatIndicatorsCompact formats all indicators for a timeframe in 2-3 compact lines.
+// Replaces verbose arrays with latest value + signal summary only.
+//
+// Example output:
+//
+//	EMA: 93.34 (trend:up, cross:above) | MACD: 0.2012 (bullish) | RSI7: 71.56 (neutral)
+//	ATR: 0.0234 | BOLL: upper_half (U:95.01 M:93.56 L:92.11)
+func FormatIndicatorsCompact(data *market.TimeframeSeriesData, indicators store.IndicatorConfig, currentPrice float64) string {
+	var line1Parts []string
+	var line2Parts []string
+
+	// EMA: latest value + trend + cross
+	if indicators.EnableEMA && len(data.EMA20Values) > 0 {
+		ema20 := data.EMA20Values[len(data.EMA20Values)-1]
+		trend := CalculateTrend(data.EMA20Values)
+		cross := "none"
+		if len(data.EMA50Values) > 0 {
+			cross = DetectEMACross(data.EMA20Values, data.EMA50Values)
+		}
+		line1Parts = append(line1Parts, fmt.Sprintf("EMA: %.2f (trend:%s, cross:%s)", ema20, trend, cross))
+	}
+
+	// MACD: latest value + signal
+	if indicators.EnableMACD && len(data.MACDValues) > 0 {
+		macd := data.MACDValues[len(data.MACDValues)-1]
+		signal := SummarizeMACD(data.MACDValues)
+		line1Parts = append(line1Parts, fmt.Sprintf("MACD: %.4f (%s)", macd, signal))
+	}
+
+	// RSI7 only (skip RSI14 in compact mode to reduce redundancy)
+	if indicators.EnableRSI && len(data.RSI7Values) > 0 {
+		rsi7 := data.RSI7Values[len(data.RSI7Values)-1]
+		zone := SummarizeRSI(rsi7)
+		line1Parts = append(line1Parts, fmt.Sprintf("RSI7: %.1f (%s)", rsi7, zone))
+	}
+
+	// ATR: single value
+	if indicators.EnableATR && data.ATR14 > 0 {
+		line2Parts = append(line2Parts, fmt.Sprintf("ATR: %.4f", data.ATR14))
+	}
+
+	// BOLL: position + band values
+	if indicators.EnableBOLL && len(data.BOLLUpper) > 0 {
+		upper := data.BOLLUpper[len(data.BOLLUpper)-1]
+		middle := data.BOLLMiddle[len(data.BOLLMiddle)-1]
+		lower := data.BOLLLower[len(data.BOLLLower)-1]
+		position := "unknown"
+		if currentPrice > 0 {
+			position = CalculateBBPosition(currentPrice, upper, middle, lower)
+		}
+		line2Parts = append(line2Parts, fmt.Sprintf("BOLL: %s (U:%.2f M:%.2f L:%.2f)", position, upper, middle, lower))
+	}
+
+	var sb strings.Builder
+	if len(line1Parts) > 0 {
+		sb.WriteString(strings.Join(line1Parts, " | "))
+		sb.WriteString("\n")
+	}
+	if len(line2Parts) > 0 {
+		sb.WriteString(strings.Join(line2Parts, " | "))
+		sb.WriteString("\n")
+	}
+	return sb.String()
 }

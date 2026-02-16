@@ -567,6 +567,9 @@ export interface IndicatorConfig {
   enable_price_ranking?: boolean;
   price_ranking_duration?: string;  // "1h", "4h", "24h" or "1h,4h,24h"
   price_ranking_limit?: number;
+
+  // Prompt optimization
+  compact_prompt?: boolean;  // Compact prompt mode: reduce ~70% token usage
 }
 
 export interface KlineConfig {

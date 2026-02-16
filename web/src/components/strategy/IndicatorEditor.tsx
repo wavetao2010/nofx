@@ -102,6 +102,10 @@ export function IndicatorEditor({
       // Tips
       aiCanCalculate: { zh: '💡 提示：AI 可自行计算这些指标，开启可减少 AI 计算量', en: '💡 Tip: AI can calculate these, enabling reduces AI workload' },
 
+      // Compact Prompt
+      compactPrompt: { zh: '紧凑 Prompt', en: 'Compact Prompt' },
+      compactPromptDesc: { zh: '减少约 70% 的 Prompt 大小，降低 API 成本', en: 'Reduce prompt size by ~70%, lower API costs' },
+
       // NofxOS Data Provider
       nofxosTitle: { zh: 'NofxOS 量化数据源', en: 'NofxOS Data Provider' },
       nofxosDesc: { zh: '专业加密货币量化数据服务', en: 'Professional crypto quant data service' },
@@ -537,6 +541,39 @@ export function IndicatorEditor({
             )}
           </div>
         </div>
+      </div>
+
+      {/* ============================================ */}
+      {/* Compact Prompt Toggle                       */}
+      {/* ============================================ */}
+      <div
+        className="flex items-center justify-between p-3 rounded-lg cursor-pointer transition-all"
+        style={{
+          background: config.compact_prompt ? 'rgba(14, 203, 129, 0.08)' : 'rgba(30, 35, 41, 0.5)',
+          border: config.compact_prompt ? '1px solid rgba(14, 203, 129, 0.3)' : '1px solid #2B3139',
+          opacity: disabled ? 0.5 : 1,
+        }}
+        onClick={() => !disabled && onChange({ ...config, compact_prompt: !config.compact_prompt })}
+      >
+        <div className="flex items-center gap-3">
+          <div
+            className="w-8 h-8 rounded-lg flex items-center justify-center"
+            style={{ background: config.compact_prompt ? 'rgba(14, 203, 129, 0.15)' : 'rgba(30, 35, 41, 0.8)' }}
+          >
+            <Zap className="w-4 h-4" style={{ color: config.compact_prompt ? '#0ECB81' : '#848E9C' }} />
+          </div>
+          <div>
+            <span className="text-sm font-medium" style={{ color: '#EAECEF' }}>{t('compactPrompt')}</span>
+            <p className="text-[10px] mt-0.5" style={{ color: '#848E9C' }}>{t('compactPromptDesc')}</p>
+          </div>
+        </div>
+        <input
+          type="checkbox"
+          checked={config.compact_prompt || false}
+          onChange={(e) => { e.stopPropagation(); !disabled && onChange({ ...config, compact_prompt: e.target.checked }) }}
+          disabled={disabled}
+          className="w-5 h-5 rounded accent-green-500"
+        />
       </div>
 
       {/* ============================================ */}

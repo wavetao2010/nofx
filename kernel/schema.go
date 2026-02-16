@@ -155,7 +155,7 @@ var DataDictionary = map[string]map[string]BilingualFieldDef{
 			NameZH: "峰值盈亏百分比",
 			NameEN: "Peak PnL Percentage",
 			Unit:   "%",
-			DescZH: "该持仓曾经达到的最高未实现盈亏。用于判断是否需要止盈",
+			DescZH: "该持仓的峰值（最高）未实现盈亏。用于判断是否需要止盈",
 			DescEN: "Historical max unrealized PnL for this position. Used for take-profit decisions",
 		},
 		"Drawdown": {
@@ -306,7 +306,7 @@ var TradingRules = struct {
 			Value:    0.30,
 			DescZH:   "当盈亏从峰值回撤30%时平仓止盈",
 			DescEN:   "Close position when PnL pulls back 30% from peak",
-			ReasonZH: "锁定大部分利润，避免盈利回吐。例如：峰值+5%，回撤到+3.5%时平仓",
+			ReasonZH: "止盈锁定大部分利润，避免盈利回吐。例如：峰值+5%，回撤到+3.5%时平仓",
 			ReasonEN: "Lock in most profits, avoid profit giveback. E.g., Peak +5%, close at +3.5%",
 		},
 		"StopLoss": {
@@ -525,6 +525,38 @@ func getSchemaPromptEN() string {
 	prompt += "- **OI Down + Price Up**: " + OIInterpretation.OIDown_PriceUp.EN + "\n"
 	prompt += "- **OI Down + Price Down**: " + OIInterpretation.OIDown_PriceDown.EN + "\n"
 
+	return prompt
+}
+
+// GetSchemaPromptCompact returns a minimal data dictionary with only non-obvious fields.
+// LLMs already understand standard trading concepts (margin, leverage, RSI, etc.).
+// Only includes: PeakPnL% (unique trailing-stop concept) and OI interpretation rules.
+func GetSchemaPromptCompact(lang Language) string {
+	if lang == LangChinese {
+		return getSchemaPromptCompactZH()
+	}
+	return getSchemaPromptCompactEN()
+}
+
+func getSchemaPromptCompactZH() string {
+	prompt := "# 📖 关键字段说明\n\n"
+	prompt += "- **PeakPnL%**（峰值盈亏）: 持仓曾达到的最高未实现盈亏。用于判断止盈时机。例如：峰值+5%，当前+3%，回撤=-2%\n\n"
+	prompt += "## 持仓量(OI)变化解读\n\n"
+	prompt += "- **OI增+价涨**: " + OIInterpretation.OIUp_PriceUp.ZH + "\n"
+	prompt += "- **OI增+价跌**: " + OIInterpretation.OIUp_PriceDown.ZH + "\n"
+	prompt += "- **OI减+价涨**: " + OIInterpretation.OIDown_PriceUp.ZH + "\n"
+	prompt += "- **OI减+价跌**: " + OIInterpretation.OIDown_PriceDown.ZH + "\n\n"
+	return prompt
+}
+
+func getSchemaPromptCompactEN() string {
+	prompt := "# 📖 Key Field Definitions\n\n"
+	prompt += "- **PeakPnL%** (Peak PnL Percentage): Historical max unrealized PnL for this position. Used for take-profit decisions. E.g., Peak +5%, Current +3%, Drawdown = -2%\n\n"
+	prompt += "## Open Interest (OI) Interpretation\n\n"
+	prompt += "- **OI Up + Price Up**: " + OIInterpretation.OIUp_PriceUp.EN + "\n"
+	prompt += "- **OI Up + Price Down**: " + OIInterpretation.OIUp_PriceDown.EN + "\n"
+	prompt += "- **OI Down + Price Up**: " + OIInterpretation.OIDown_PriceUp.EN + "\n"
+	prompt += "- **OI Down + Price Down**: " + OIInterpretation.OIDown_PriceDown.EN + "\n\n"
 	return prompt
 }
 

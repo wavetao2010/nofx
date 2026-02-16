@@ -171,6 +171,10 @@ type IndicatorConfig struct {
 	EnablePriceRanking   bool   `json:"enable_price_ranking"`             // whether to enable price ranking data
 	PriceRankingDuration string `json:"price_ranking_duration,omitempty"` // durations: "1h" or "1h,4h,24h"
 	PriceRankingLimit    int    `json:"price_ranking_limit,omitempty"`    // number of entries per ranking (default 10)
+
+	// ========== Prompt Optimization ==========
+	// Compact prompt mode: reduce prompt size by ~70% using signal summaries instead of raw arrays
+	CompactPrompt bool `json:"compact_prompt"`
 }
 
 // KlineConfig K-line configuration
