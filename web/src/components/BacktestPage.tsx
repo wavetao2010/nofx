@@ -912,6 +912,44 @@ export function BacktestPage() {
     }
   }, [strategies, formState.strategyId])
 
+  // Auto-sync form values when a strategy is selected
+  useEffect(() => {
+    if (!selectedStrategy?.config) return
+    const cfg = selectedStrategy.config
+    const updates: Record<string, unknown> = {}
+
+    // Sync timeframes from strategy indicators
+    const strategyTFs = cfg.indicators?.klines?.selected_timeframes
+    if (strategyTFs?.length) {
+      updates.timeframes = strategyTFs
+      // Sync decision timeframe to strategy's primary timeframe
+      const primaryTF = cfg.indicators.klines.primary_timeframe
+      if (primaryTF && strategyTFs.includes(primaryTF)) {
+        updates.decisionTf = primaryTF
+      } else {
+        updates.decisionTf = strategyTFs[0]
+      }
+    }
+
+    // Sync leverage from strategy risk control
+    if (cfg.risk_control?.btc_eth_max_leverage) {
+      updates.btcEthLeverage = cfg.risk_control.btc_eth_max_leverage
+    }
+    if (cfg.risk_control?.altcoin_max_leverage) {
+      updates.altcoinLeverage = cfg.risk_control.altcoin_max_leverage
+    }
+
+    // Sync symbols from strategy coin source (static coins only)
+    const coinSource = cfg.coin_source
+    if (coinSource?.source_type === 'static' && coinSource.static_coins?.length) {
+      updates.symbols = coinSource.static_coins.join(',')
+    }
+
+    if (Object.keys(updates).length > 0) {
+      setFormState((prev) => ({ ...prev, ...updates }))
+    }
+  }, [selectedStrategy])
+
   // Auto-select first run
   useEffect(() => {
     if (!selectedRunId && runs.length > 0) {

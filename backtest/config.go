@@ -104,6 +104,18 @@ func (cfg *BacktestConfig) Validate() error {
 	}
 	cfg.DecisionTimeframe = normalizedDecision
 
+	// Ensure DecisionTimeframe is in Timeframes list
+	found := false
+	for _, tf := range cfg.Timeframes {
+		if tf == cfg.DecisionTimeframe {
+			found = true
+			break
+		}
+	}
+	if !found {
+		cfg.Timeframes = append([]string{cfg.DecisionTimeframe}, cfg.Timeframes...)
+	}
+
 	if cfg.DecisionCadenceNBars <= 0 {
 		cfg.DecisionCadenceNBars = 20
 	}
