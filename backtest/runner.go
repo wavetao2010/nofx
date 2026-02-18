@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"math"
 	"nofx/logger"
 	"os"
 	"path/filepath"
@@ -1144,26 +1143,21 @@ func (r *Runner) checkLiquidation(ts int64, priceMap map[string]float64, cycle i
 	return events, note, nil
 }
 
-// applyStopLossTakeProfit sets SL/TP on a position using ATR-based calculation.
-// Always uses code-calculated values (ignores AI-provided SL/TP).
-// SL distance = max(2×ATR14, 3%×leverage×price), capped by liquidation distance.
+// applyStopLossTakeProfit sets SL/TP on a position.
+// Priority: ATR-based → margin%-based fallback → liquidation cap.
 // TP distance = 3× SL distance (maintains 1:3 risk/reward ratio).
 func (r *Runner) applyStopLossTakeProfit(pos *position, execPrice float64, atr float64) {
-	// Percentage-based SL distance (fallback when ATR unavailable)
-	pctDist := math.Min(0.03*float64(pos.Leverage), 0.30)
-	slDist := execPrice * pctDist
+	var slDist float64
 
-	// Use ATR if available and wider than percentage-based (avoids being shaken out by normal volatility)
 	if atr > 0 {
-		atrDist := 2.0 * atr
-		if atrDist > slDist {
-			slDist = atrDist
-		}
+		// Primary: ATR-based SL — reflects actual market volatility
+		slDist = 2.0 * atr
+	} else {
+		// Fallback: margin loss 30% → price distance = 30% / leverage
+		slDist = execPrice * 0.30 / float64(pos.Leverage)
 	}
 
-	// Cap SL distance so it never exceeds 80% of liquidation distance.
-	// Liquidation distance ≈ entry / leverage. Without this cap, high-leverage
-	// positions (e.g. 20x) get a 30% SL while liquidation is at 5%, making SL useless.
+	// Hard cap: SL must not exceed 80% of liquidation distance (entry / leverage)
 	liqDist := execPrice / float64(pos.Leverage)
 	maxSLDist := liqDist * 0.80
 	if slDist > maxSLDist {
