@@ -1146,7 +1146,7 @@ func (r *Runner) checkLiquidation(ts int64, priceMap map[string]float64, cycle i
 
 // applyStopLossTakeProfit sets SL/TP on a position using ATR-based calculation.
 // Always uses code-calculated values (ignores AI-provided SL/TP).
-// SL distance = max(2×ATR14, 3%×leverage×price), capped at 30% of price.
+// SL distance = max(2×ATR14, 3%×leverage×price), capped by liquidation distance.
 // TP distance = 3× SL distance (maintains 1:3 risk/reward ratio).
 func (r *Runner) applyStopLossTakeProfit(pos *position, execPrice float64, atr float64) {
 	// Percentage-based SL distance (fallback when ATR unavailable)
@@ -1161,10 +1161,13 @@ func (r *Runner) applyStopLossTakeProfit(pos *position, execPrice float64, atr f
 		}
 	}
 
-	// Cap SL distance at 30% of entry price
-	maxDist := execPrice * 0.30
-	if slDist > maxDist {
-		slDist = maxDist
+	// Cap SL distance so it never exceeds 80% of liquidation distance.
+	// Liquidation distance ≈ entry / leverage. Without this cap, high-leverage
+	// positions (e.g. 20x) get a 30% SL while liquidation is at 5%, making SL useless.
+	liqDist := execPrice / float64(pos.Leverage)
+	maxSLDist := liqDist * 0.80
+	if slDist > maxSLDist {
+		slDist = maxSLDist
 	}
 
 	// TP distance = 3× SL distance (1:3 risk/reward)

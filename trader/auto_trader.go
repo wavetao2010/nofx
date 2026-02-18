@@ -1247,7 +1247,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
 	// ATR-based SL/TP calculation (always code-calculated, ignores AI values)
-	// SL distance = max(2×ATR14, 3%×leverage×price), capped at 30%
+	// SL distance = max(2×ATR14, 3%×leverage×price), capped by liquidation distance
 	// TP distance = 3× SL distance (1:3 risk/reward)
 	{
 		pctDist := math.Min(0.03*float64(decision.Leverage), 0.30)
@@ -1258,9 +1258,11 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 				slDist = atrDist
 			}
 		}
-		maxDist := marketData.CurrentPrice * 0.30
-		if slDist > maxDist {
-			slDist = maxDist
+		// Cap SL at 80% of liquidation distance (prevents SL beyond liquidation on high leverage)
+		liqDist := marketData.CurrentPrice / float64(decision.Leverage)
+		maxSLDist := liqDist * 0.80
+		if slDist > maxSLDist {
+			slDist = maxSLDist
 		}
 		tpDist := slDist * 3.0
 		decision.StopLoss = marketData.CurrentPrice - slDist
@@ -1406,9 +1408,11 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 				slDist = atrDist
 			}
 		}
-		maxDist := marketData.CurrentPrice * 0.30
-		if slDist > maxDist {
-			slDist = maxDist
+		// Cap SL at 80% of liquidation distance (prevents SL beyond liquidation on high leverage)
+		liqDist := marketData.CurrentPrice / float64(decision.Leverage)
+		maxSLDist := liqDist * 0.80
+		if slDist > maxSLDist {
+			slDist = maxSLDist
 		}
 		tpDist := slDist * 3.0
 		decision.StopLoss = marketData.CurrentPrice + slDist
