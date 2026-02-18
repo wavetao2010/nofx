@@ -1246,14 +1246,26 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 	at.positionFirstSeenTime[posKey] = time.Now().UnixMilli()
 
 	// ATR-based SL/TP calculation (always code-calculated, ignores AI values)
-	// Priority: ATR-based → margin%-based fallback → liquidation cap
+	// Priority: ATR-based (prefer 4h) → margin%-based fallback
+	// Floor: 1.5% of entry. Cap: 80% of liquidation distance.
 	// TP distance = 3× SL distance (1:3 risk/reward)
 	{
 		var slDist float64
-		if marketData.IntradaySeries != nil && marketData.IntradaySeries.ATR14 > 0 {
-			slDist = 2.0 * marketData.IntradaySeries.ATR14
+		var atrUsed float64
+		// Prefer longer-term ATR (4h) — intraday ATR is too small for meaningful SL
+		if marketData.LongerTermContext != nil && marketData.LongerTermContext.ATR14 > 0 {
+			atrUsed = marketData.LongerTermContext.ATR14
+			slDist = 2.0 * atrUsed
+		} else if marketData.IntradaySeries != nil && marketData.IntradaySeries.ATR14 > 0 {
+			atrUsed = marketData.IntradaySeries.ATR14
+			slDist = 2.0 * atrUsed
 		} else {
 			slDist = marketData.CurrentPrice * 0.30 / float64(decision.Leverage)
+		}
+		// Floor: at least 1.5% of entry price
+		minSLDist := marketData.CurrentPrice * 0.015
+		if slDist < minSLDist {
+			slDist = minSLDist
 		}
 		// Cap at 80% of liquidation distance
 		liqDist := marketData.CurrentPrice / float64(decision.Leverage)
@@ -1265,13 +1277,7 @@ func (at *AutoTrader) executeOpenLongWithRecord(decision *kernel.Decision, actio
 		decision.StopLoss = marketData.CurrentPrice - slDist
 		decision.TakeProfit = marketData.CurrentPrice + tpDist
 		logger.Infof("  🎯 SL/TP set: SL=%.4f TP=%.4f (slDist=%.4f, ATR=%.4f)",
-			decision.StopLoss, decision.TakeProfit, slDist,
-			func() float64 {
-				if marketData.IntradaySeries != nil {
-					return marketData.IntradaySeries.ATR14
-				}
-				return 0
-			}())
+			decision.StopLoss, decision.TakeProfit, slDist, atrUsed)
 	}
 
 	// Set stop loss and take profit
@@ -1398,10 +1404,21 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 	// For short: SL above entry, TP below entry
 	{
 		var slDist float64
-		if marketData.IntradaySeries != nil && marketData.IntradaySeries.ATR14 > 0 {
-			slDist = 2.0 * marketData.IntradaySeries.ATR14
+		var atrUsed float64
+		// Prefer longer-term ATR (4h) — intraday ATR is too small for meaningful SL
+		if marketData.LongerTermContext != nil && marketData.LongerTermContext.ATR14 > 0 {
+			atrUsed = marketData.LongerTermContext.ATR14
+			slDist = 2.0 * atrUsed
+		} else if marketData.IntradaySeries != nil && marketData.IntradaySeries.ATR14 > 0 {
+			atrUsed = marketData.IntradaySeries.ATR14
+			slDist = 2.0 * atrUsed
 		} else {
 			slDist = marketData.CurrentPrice * 0.30 / float64(decision.Leverage)
+		}
+		// Floor: at least 1.5% of entry price
+		minSLDist := marketData.CurrentPrice * 0.015
+		if slDist < minSLDist {
+			slDist = minSLDist
 		}
 		// Cap at 80% of liquidation distance
 		liqDist := marketData.CurrentPrice / float64(decision.Leverage)
@@ -1413,13 +1430,7 @@ func (at *AutoTrader) executeOpenShortWithRecord(decision *kernel.Decision, acti
 		decision.StopLoss = marketData.CurrentPrice + slDist
 		decision.TakeProfit = marketData.CurrentPrice - tpDist
 		logger.Infof("  🎯 SL/TP set: SL=%.4f TP=%.4f (slDist=%.4f, ATR=%.4f)",
-			decision.StopLoss, decision.TakeProfit, slDist,
-			func() float64 {
-				if marketData.IntradaySeries != nil {
-					return marketData.IntradaySeries.ATR14
-				}
-				return 0
-			}())
+			decision.StopLoss, decision.TakeProfit, slDist, atrUsed)
 	}
 
 	// Set stop loss and take profit

@@ -663,10 +663,16 @@ func (r *Runner) executeDecision(dec kernel.Decision, priceMap map[string]float6
 	}
 	fillPrice := r.executionPrice(symbol, basePrice, ts)
 
-	// Extract ATR14 for intelligent SL/TP calculation
+	// Extract ATR for SL/TP calculation.
+	// Prefer longer-term (4h) ATR — decision-timeframe (e.g. 5m) ATR is too small
+	// for meaningful stop-loss distances on most coins.
 	var atr float64
-	if md, ok := marketData[symbol]; ok && md.IntradaySeries != nil {
-		atr = md.IntradaySeries.ATR14
+	if md, ok := marketData[symbol]; ok {
+		if md.LongerTermContext != nil && md.LongerTermContext.ATR14 > 0 {
+			atr = md.LongerTermContext.ATR14
+		} else if md.IntradaySeries != nil && md.IntradaySeries.ATR14 > 0 {
+			atr = md.IntradaySeries.ATR14
+		}
 	}
 
 	switch dec.Action {
@@ -1144,7 +1150,9 @@ func (r *Runner) checkLiquidation(ts int64, priceMap map[string]float64, cycle i
 }
 
 // applyStopLossTakeProfit sets SL/TP on a position.
-// Priority: ATR-based → margin%-based fallback → liquidation cap.
+// Priority: ATR-based (prefer 4h) → margin%-based fallback.
+// Floor: SL distance ≥ 1.5% of entry (avoids normal noise triggering SL).
+// Cap: SL distance ≤ 80% of liquidation distance.
 // TP distance = 3× SL distance (maintains 1:3 risk/reward ratio).
 func (r *Runner) applyStopLossTakeProfit(pos *position, execPrice float64, atr float64) {
 	var slDist float64
@@ -1157,7 +1165,15 @@ func (r *Runner) applyStopLossTakeProfit(pos *position, execPrice float64, atr f
 		slDist = execPrice * 0.30 / float64(pos.Leverage)
 	}
 
-	// Hard cap: SL must not exceed 80% of liquidation distance (entry / leverage)
+	// Floor: SL distance must be at least 1.5% of entry price.
+	// Crypto markets routinely move 1%+ within an hour; anything tighter
+	// gets swept by normal volatility.
+	minSLDist := execPrice * 0.015
+	if slDist < minSLDist {
+		slDist = minSLDist
+	}
+
+	// Cap: SL must not exceed 80% of liquidation distance (entry / leverage)
 	liqDist := execPrice / float64(pos.Leverage)
 	maxSLDist := liqDist * 0.80
 	if slDist > maxSLDist {
