@@ -1125,13 +1125,19 @@ func (t *FuturesTrader) SetStopLoss(symbol string, positionSide string, quantity
 		posSide = futures.PositionSideTypeShort
 	}
 
+	// Format price to exchange-required precision
+	formattedPrice, err := t.FormatPrice(symbol, stopPrice)
+	if err != nil {
+		formattedPrice = fmt.Sprintf("%.2f", stopPrice)
+	}
+
 	// Use new Algo Order API
-	_, err := t.client.NewCreateAlgoOrderService().
+	_, err = t.client.NewCreateAlgoOrderService().
 		Symbol(symbol).
 		Side(side).
 		PositionSide(posSide).
 		Type(futures.AlgoOrderTypeStopMarket).
-		TriggerPrice(fmt.Sprintf("%.8f", stopPrice)).
+		TriggerPrice(formattedPrice).
 		WorkingType(futures.WorkingTypeContractPrice).
 		ClosePosition(true).
 		ClientAlgoId(getBrOrderID()).
@@ -1159,13 +1165,19 @@ func (t *FuturesTrader) SetTakeProfit(symbol string, positionSide string, quanti
 		posSide = futures.PositionSideTypeShort
 	}
 
+	// Format price to exchange-required precision
+	formattedPrice, err := t.FormatPrice(symbol, takeProfitPrice)
+	if err != nil {
+		formattedPrice = fmt.Sprintf("%.2f", takeProfitPrice)
+	}
+
 	// Use new Algo Order API
-	_, err := t.client.NewCreateAlgoOrderService().
+	_, err = t.client.NewCreateAlgoOrderService().
 		Symbol(symbol).
 		Side(side).
 		PositionSide(posSide).
 		Type(futures.AlgoOrderTypeTakeProfitMarket).
-		TriggerPrice(fmt.Sprintf("%.8f", takeProfitPrice)).
+		TriggerPrice(formattedPrice).
 		WorkingType(futures.WorkingTypeContractPrice).
 		ClosePosition(true).
 		ClientAlgoId(getBrOrderID()).
