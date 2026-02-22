@@ -26,14 +26,20 @@ func NewPositionBuilder(positionStore *PositionStore) *PositionBuilder {
 
 // ProcessTrade processes a single trade and updates position accordingly
 // tradeTimeMs is Unix milliseconds UTC
+// leverage is the leverage used (0 means unknown/default to 1)
 func (pb *PositionBuilder) ProcessTrade(
 	traderID, exchangeID, exchangeType, symbol, side, action string,
 	quantity, price, fee, realizedPnL float64,
 	tradeTimeMs int64,
 	orderID string,
+	leverage ...int,
 ) error {
+	lev := 0
+	if len(leverage) > 0 {
+		lev = leverage[0]
+	}
 	if strings.HasPrefix(action, "open_") {
-		return pb.handleOpen(traderID, exchangeID, exchangeType, symbol, side, quantity, price, fee, tradeTimeMs, orderID)
+		return pb.handleOpen(traderID, exchangeID, exchangeType, symbol, side, quantity, price, fee, tradeTimeMs, orderID, lev)
 	} else if strings.HasPrefix(action, "close_") {
 		return pb.handleClose(traderID, exchangeID, exchangeType, symbol, side, quantity, price, fee, realizedPnL, tradeTimeMs, orderID)
 	}
@@ -47,6 +53,7 @@ func (pb *PositionBuilder) handleOpen(
 	quantity, price, fee float64,
 	tradeTimeMs int64,
 	orderID string,
+	leverage int,
 ) error {
 	// Get existing OPEN position for (symbol, side)
 	existing, err := pb.positionStore.GetOpenPositionBySymbol(traderID, symbol, side)
@@ -57,6 +64,10 @@ func (pb *PositionBuilder) handleOpen(
 	nowMs := time.Now().UTC().UnixMilli()
 	if existing == nil {
 		// Create new position
+		lev := leverage
+		if lev <= 0 {
+			lev = 1
+		}
 		position := &TraderPosition{
 			TraderID:           traderID,
 			ExchangeID:         exchangeID,
@@ -68,7 +79,7 @@ func (pb *PositionBuilder) handleOpen(
 			EntryPrice:         price,
 			EntryOrderID:       orderID,
 			EntryTime:          tradeTimeMs,
-			Leverage:           1,
+			Leverage:           lev,
 			Status:             "OPEN",
 			Source:             "sync",
 			Fee:                fee,

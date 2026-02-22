@@ -602,6 +602,7 @@ func (r *Runner) buildDecisionContext(ts int64, marketData map[string]*market.Da
 }
 
 func (r *Runner) fillDecisionRecord(record *store.DecisionRecord, full *kernel.FullDecision) {
+	record.SystemPrompt = full.SystemPrompt
 	record.InputPrompt = full.UserPrompt
 	record.CoTTrace = full.CoTTrace
 	if len(full.Decisions) > 0 {

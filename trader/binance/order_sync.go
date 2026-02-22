@@ -170,6 +170,7 @@ func (t *FuturesTrader) SyncOrdersFromBinance(traderID string, exchangeID string
 	// Process trades one by one
 	positionStore := st.Position()
 	posBuilder := store.NewPositionBuilder(positionStore)
+	leverageMap := t.getLeverageMap()
 	syncedCount := 0
 
 	skippedCount := 0
@@ -255,11 +256,13 @@ func (t *FuturesTrader) SyncOrdersFromBinance(traderID string, exchangeID string
 		}
 
 		// Create/update position record using PositionBuilder
+		symbolLeverage := leverageMap[symbol]
 		if err := posBuilder.ProcessTrade(
 			traderID, exchangeID, exchangeType,
 			symbol, positionSide, orderAction,
 			trade.Quantity, trade.Price, trade.Fee, trade.RealizedPnL,
 			tradeTimeMs, trade.TradeID,
+			symbolLeverage,
 		); err != nil {
 			logger.Infof("  ⚠️ Failed to sync position for trade %s: %v", trade.TradeID, err)
 		} else {
@@ -305,6 +308,23 @@ func (t *FuturesTrader) getPositionSymbols() []string {
 		}
 	}
 	return symbols
+}
+
+// getLeverageMap returns a map of symbol -> leverage from cached positions
+func (t *FuturesTrader) getLeverageMap() map[string]int {
+	positions, err := t.GetPositions()
+	if err != nil {
+		return nil
+	}
+
+	leverageMap := make(map[string]int)
+	for _, pos := range positions {
+		symbol, _ := pos["symbol"].(string)
+		if lev, ok := pos["leverage"].(float64); ok && symbol != "" && lev > 0 {
+			leverageMap[symbol] = int(lev)
+		}
+	}
+	return leverageMap
 }
 
 // determineOrderAction determines the order action based on trade data
